@@ -2012,7 +2012,7 @@ int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
             int regX = cx < 0 ? cx - 40+1 : cx;
             int regZ = cz < 0 ? cz - 40+1 : cz;
             setRegionSeed(seed, regX, regZ, 10387312);
-            r->abandoned = nextInt(sc.salt) == 0;
+            r->abandoned = nextInt(sc.rarity) == 0;
             return 0;
         }
         if (!isViableFeatureBiome(mc, Village, biomeID))
