@@ -73,14 +73,14 @@ const char* mc2str(int mc)
     case MC_1_21:    return "1.21"; break;
     case MC_1_21_50: return "1.21.50"; break;
     case MC_1_21_60: return "1.21.60"; break;
-    case MC_26_30:   return "26.20"; break;
+    case MC_26_30:   return "26.30"; break;
     default:         return "?";
     }
 }
 
 int str2mc(const char *s)
 {
-    if (!strcmp(s, "26.20"))    return MC_26_30;
+    if (!strcmp(s, "26.30"))    return MC_26_30;
     if (!strcmp(s, "1.21"))     return MC_1_21;
     if (!strcmp(s, "1.21.0"))   return MC_1_21_0;
     if (!strcmp(s, "1.21.50"))  return MC_1_21_50;
@@ -252,7 +252,7 @@ const char *biome2str(int mc, int id)
     case cherry_grove: return "cherry_grove";
     // 1.21.50 (Winter Drop)
     case pale_garden: return "pale_garden";
-    // 26.20
+    // 26.30
     case sulfur_caves: return "sulfur_caves";
     }
     return NULL;

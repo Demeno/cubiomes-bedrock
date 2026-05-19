@@ -170,7 +170,7 @@ enum BiomeID
     cherry_grove                    = 185,
     // 1.21 Winter Drop
     pale_garden                     = 186,
-    // 26.20
+    // 26.30
     sulfur_caves                    = 187,
 };
 
