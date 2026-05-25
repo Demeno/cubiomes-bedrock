@@ -1003,7 +1003,7 @@ uint64_t calcFitness(const Generator *g, int x, int z)
     // apply dependence on distance from origin
     a = (int64_t)x*x;
     b = (int64_t)z*z;
-    if (g->mc <= MC_1_21)
+    if (g->mc < MC_1_21_60)
     {
         double s = (double)(a + b) / (2500 * 2500);
         q = (uint64_t)(s*s * 1e8) + ds;
