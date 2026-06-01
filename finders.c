@@ -1290,9 +1290,9 @@ int isViableFeatureBiome(int mc, int structureType, int biomeID)
         return biomeID == desert || biomeID == plains || biomeID == savanna || biomeID == taiga;
 
     case Village:
-        if (biomeID == plains || biomeID == desert || biomeID == savanna || biomeID == snowy_plains)
+        if (biomeID == plains || biomeID == desert || biomeID == savanna || biomeID == snowy_plains || biomeID == sunflower_plains)
             return 1;
-        if (mc >= MC_1_11 && (biomeID == taiga || biomeID == snowy_taiga || biomeID == sunflower_plains))
+        if (mc >= MC_1_11 && (biomeID == taiga || biomeID == snowy_taiga))
             return 1;
         if (mc >= MC_1_18 && biomeID == meadow)
             return 1;
