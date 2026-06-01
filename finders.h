@@ -943,8 +943,9 @@ int isVillageChunk(StructureConfig config, uint64_t seed, int chunkX, int chunkZ
 {
     int regionSize = 40;
     int chunkRange = 28;//40 - 12
-    Pos reg = chunkToRegion(chunkX, chunkZ, 1/*regionSize*/);
-    setRegionSeed(seed, reg.x, reg.z, config.salt);
+    int regionX = chunkX < 0 ? chunkX - regionSize + 1 : chunkX;
+    int regionZ = chunkZ < 0 ? chunkZ - regionSize + 1 : chunkZ;
+    setRegionSeed(seed, regionX, regionZ, config.salt);
     int vchunkX = nextInt(chunkRange) + chunkX - regionOffset(chunkX, regionSize);
     if (vchunkX != chunkX) return 0;
     int vchunkZ = nextInt(chunkRange) + chunkZ - regionOffset(chunkZ, regionSize);
