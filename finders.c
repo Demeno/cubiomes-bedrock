@@ -6965,7 +6965,7 @@ static void _genPotential(struct _gp_args *a, int layer, int id)
         break;
 
     case L_OCEAN_MIX_4:
-        /*if (mc z<= MC_1_12)*/ goto L_bad_layer;
+        if (mc <= MC_1_2) goto L_bad_layer;
         // fallthrough
 
     case L_VORONOI_1:
