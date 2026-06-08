@@ -4,8 +4,9 @@
 #include "tables/btree19.h"
 #include "tables/btree20.h"
 #include "tables/btree21wd.h"
+#include "tables/btree215.h"
 #include "tables/btree262.h"
-#include "tables/btree263.h"z
+#include "tables/btree263.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1429,6 +1430,10 @@ int climateToBiome(int mc, const uint64_t np[6], uint64_t *dat)
         btree21wd_steps, &btree21wd_param[0][0], btree21wd_nodes, btree21wd_order,
         sizeof(btree21wd_nodes) / sizeof(uint64_t)
     };
+    static const BiomeTree btree215 = {
+        btree215_steps, &btree215_param[0][0], btree215_nodes, btree215_order,
+        sizeof(btree215_nodes) / sizeof(uint64_t)
+    };
     static const BiomeTree btree262 = {
         btree262_steps, &btree262_param[0][0], btree262_nodes, btree262_order,
         sizeof(btree262_nodes) / sizeof(uint64_t)
@@ -1445,6 +1450,8 @@ int climateToBiome(int mc, const uint64_t np[6], uint64_t *dat)
         bt = &btree263;
     else if (mc >= MC_26_20)
         bt = &btree262;
+    else if (mc >= MC_1_21_60)
+        bt = &btree215;
     else if (mc >= MC_1_21_50)
         bt = &btree21wd;
     else if (mc >= MC_1_20)
