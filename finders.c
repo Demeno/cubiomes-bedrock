@@ -1202,10 +1202,10 @@ int isViableFeatureBiome(int mc, int structureType, int biomeID)
         return biomeID == desert || biomeID == desert_hills;
 
     case Jungle_Pyramid:
-        return biomeID == jungle;
+        return biomeID == jungle || biomeID == jungle_hills;
 
     case Swamp_Hut:
-        return biomeID == swamp;
+        return biomeID == swamp || biomeID == swamp_hills;
 
     case Igloo:
         return biomeID == snowy_plains || biomeID == snowy_taiga || biomeID == snowy_slopes;
@@ -1216,7 +1216,8 @@ int isViableFeatureBiome(int mc, int structureType, int biomeID)
 
     case Shipwreck:
         if (mc <= MC_1_2) return 0;
-        return isOceanic(biomeID) || biomeID == beach || biomeID == snowy_beach;
+        if (biomeID == deep_warm_ocean) return 0;
+        return isOceanic(biomeID) || biomeID == beach || biomeID == snowy_beach || biomeID == mushroom_field_shore;
 
     case Ruined_Portal:
     case Ruined_Portal_N:
@@ -1248,7 +1249,7 @@ int isViableFeatureBiome(int mc, int structureType, int biomeID)
 
     case Treasure:
         if (mc <= MC_1_2) return 0;
-        return biomeID == beach || biomeID == snowy_beach || biomeID == stony_shore;
+        return biomeID == beach || biomeID == snowy_beach || biomeID == stony_shore || biomeID == mushroom_field_shore;
 
     case Mineshaft:
     case Ravine:
@@ -1449,6 +1450,46 @@ static const uint64_t g_monument_biomes1 =
     (1ULL << warm_ocean) |
     (1ULL << deep_warm_ocean);
 
+static const uint64_t g_village_biomes =
+    (1ULL << plains) |
+    (1ULL << savanna) |
+    (1ULL << desert) |
+    (1ULL << taiga) |
+    (1ULL << snowy_plains) |
+    (1ULL << snowy_taiga);
+
+static const uint64_t g_treasure_biomes =
+    (1ULL << beach) |
+    (1ULL << snowy_beach) |
+    (1ULL << stony_shore) |
+    (1ULL << mushroom_field_shore);
+
+static int monumentNearby(Generator *g, int chunkX, int chunkZ)
+{
+    int x0 = chunkX-5, x1 = chunkX+4;
+    int z0 = chunkZ-5, z1 = chunkZ+4;
+    StructureConfig sconf;
+    if (!getStructureConfig(Monument, g->mc, &sconf))
+        return 0;
+    Pos rmin = chunkToRegion(x0, z0, sconf.regionSize);
+    Pos rmax = chunkToRegion(x1, z1, sconf.regionSize);
+    for (int rz = rmin.z; rz <= rmax.z; rz++)
+    {
+        for (int rx = rmin.x; rx <= rmax.x; rx++)
+        {
+            Pos p;
+            if (!getStructurePos(Monument, g->mc, g->seed, rx, rz, &p))
+                continue;
+            int mcx = p.x >> 4, mcz = p.z >> 4;
+            if (mcx < x0 || mcx > x1 || mcz < z0 || mcz > z1)
+                continue;
+            if (isViableStructurePos(Monument, g, p.x, p.z, 0))
+                return 1;
+        }
+    }
+    return 0;
+}
+
 int isViableStructurePos(int structureType, Generator *g, int x, int z, uint32_t flags)
 {
     int approx = 0; // enables approximation levels
@@ -1543,10 +1584,34 @@ int isViableStructurePos(int structureType, Generator *g, int x, int z, uint32_t
         if (g->mc <= MC_1_19) goto L_not_viable;
         goto L_feature;
     case Ocean_Ruin:
-    case Shipwreck:
-    case Treasure:
+    {
         if (g->mc <= MC_1_2) goto L_not_viable;
+        if (monumentNearby(g, chunkX, chunkZ)) goto L_not_viable;
         goto L_feature;
+    }
+    case Shipwreck:
+    {
+        if (g->mc <= MC_1_2) goto L_not_viable;
+        int id = getBiomeAt(g, 4, x >> 2, 63 >> 2, z >> 2);
+        if (id < 0 || !isViableFeatureBiome(g->mc, structureType, id))
+            goto L_not_viable;
+        int radius = (id == beach || id == snowy_beach || id == mushroom_field_shore) ? 10 : 20;
+        uint64_t b = (1ULL << id);
+        if (!areBiomesViable(g, x, 63, z, radius, b, 0, 0) ||
+             monumentNearby(g, chunkX, chunkZ)
+            ) goto L_not_viable;
+        viable = id;
+        goto L_viable;
+    }
+
+    case Treasure:
+    {
+        if (g->mc < MC_1_18)
+            g->entry = &g->ls.layers[L_RIVER_MIX_4];
+        if (!areBiomesViable(g, x, 319, z, 3, g_treasure_biomes, 0, 0))
+            goto L_not_viable;
+        goto L_viable;
+    }
     case Igloo:
         if (g->mc <= MC_1_8) goto L_not_viable;
         goto L_feature;
@@ -1592,63 +1657,12 @@ L_feature:
         goto L_viable;
 
     case Village:
-        if (g->mc < MC_1_18)
-        {
-            if (g->mc == MC_1_14)
-            {
-                g->entry = &g->ls.layers[L_VORONOI_1];
-                sampleX = chunkX * 16 + 9;
-                sampleZ = chunkZ * 16 + 9;
-            }
-            else
-            {
-                g->entry = &g->ls.layers[L_RIVER_MIX_4];
-                sampleX = chunkX * 4 + 2;
-                sampleZ = chunkZ * 4 + 2;
-            }
-            id = getBiomeAt(g, 0, sampleX, 0, sampleZ);
-            if (id < 0 || !isViableFeatureBiome(g->mc, structureType, id))
-                goto L_not_viable;
-            if (flags && (uint32_t) id != flags)
-                goto L_not_viable;
-            if (g->mc < MC_1_0)
-            {
-                sampleX = chunkX * 16 + 2;
-                sampleZ = chunkZ * 16 + 2;
-                id = getBiomeAt(g, 1, sampleX, 0, sampleZ);
-                if (id < 0 || !isViableFeatureBiome(g->mc, structureType, id))
-                    goto L_not_viable;
-            }
-            viable = id; // biome for viablility, useful for further analysis
-            goto L_viable;
-        }
-        else
-        {   // In 1.18 village types are checked separtely...
-            const int vv[] = { plains, desert, savanna, taiga, snowy_taiga, snowy_plains };
-            int samples[4];
-            int k = 0;
-            size_t i;
-            for (int dx = 7; dx <= 8; dx++) {
-                for (int dz = 7; dz <= 8; dz++) {
-                    sampleX = chunkX * 16 + dx;
-                    sampleZ = chunkZ * 16 + dz;
-                    sampleY = 319 >> 2;
-                    samples[k++] = getBiomeAt(g, 0, sampleX >> 2, sampleY, sampleZ >> 2);
-                }
-            }
-            for (i = 0; i < sizeof(vv)/sizeof(int); i++) {
-                if (flags && flags != (uint32_t) vv[i])
-                    continue;
-                for (k = 0; k < 4; k++) {
-                    id = samples[k];
-                    if (id == vv[i] || ((id == meadow || id == sunflower_plains) && vv[i] == plains)) {
-                        viable = vv[i];
-                        goto L_viable;
-                    }
-                }
-            }
+    {
+        uint64_t m = (1ULL << (meadow - 128) | 1ULL << (sunflower_plains - 128));
+        if (!areBiomesViable(g, x, 319, z, 2, g_village_biomes, m, 0))
             goto L_not_viable;
-        }
+        goto L_viable;
+    }
 
     case Outpost:
     {
