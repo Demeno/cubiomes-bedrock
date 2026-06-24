@@ -41,6 +41,7 @@ int getStructureConfig(int structureType, int mc, StructureConfig *sconf)
     s_ancient_city          = { 20083232, 24, 16, Ancient_City,     DIM_OVERWORLD, 0},
     s_trail_ruins           = { 83469867, 34, 26, Trail_Ruins,      DIM_OVERWORLD, 0},
     s_trial_chambers        = { 94251327, 34, 22, Trial_Chambers,   DIM_OVERWORLD, 0},
+    s_abandoned_camp        = { 91231127, 34, 26, Abandoned_Camp,   DIM_OVERWORLD, 0},
     s_treasure              = { 16842397,  4,  2, Treasure,         DIM_OVERWORLD, 0},
     s_mineshaft             = {        0,  1,  1, Mineshaft,        DIM_OVERWORLD, 0},
     // nether structures
@@ -155,6 +156,9 @@ int getStructureConfig(int structureType, int mc, StructureConfig *sconf)
     case Trial_Chambers:
         *sconf = s_trial_chambers;
         return mc >= MC_1_21;
+    case Abandoned_Camp:
+        *sconf = s_abandoned_camp;
+        return mc >= MC_26_40; // 26.40.27
     default:
         memset(sconf, 0, sizeof(StructureConfig));
         return 0;
@@ -212,6 +216,7 @@ int getStructurePos(int structureType, int mc, uint64_t seed, int regX, int regZ
     case Outpost:
     case Ancient_City:
     case Treasure:
+    case Abandoned_Camp:
         *pos = getLargeStructurePos(sconf, seed, regX, regZ);
         // bug? for some reason v1.4.2 treasures spawn at coords -2 from where they should be
         if (structureType == Treasure && mc <= MC_1_4)
@@ -1247,6 +1252,34 @@ int isViableFeatureBiome(int mc, int structureType, int biomeID)
         if (mc <= MC_1_20) return 0;
         return biomeID != deep_dark && isOverworld(mc, biomeID);
 
+    case Abandoned_Camp:
+        if (mc <= MC_26_30) return 0;
+        else {
+            switch (biomeID) {
+            case savanna:
+            case flower_forest:
+            case birch_forest:
+            case forest:
+            case snowy_taiga:
+            case bamboo_jungle:
+            case sparse_jungle:
+            case cherry_grove:
+            case meadow:
+            case old_growth_birch_forest:
+            case old_growth_spruce_taiga:
+            case old_growth_pine_taiga:
+            case swamp:
+            case taiga:
+            case windswept_forest:
+            case dappled_forest:
+            case wooded_badlands:
+            case pale_garden:
+                return 1;
+            default:
+                return 0;
+            }
+        }
+
     case Treasure:
         if (mc <= MC_1_2) return 0;
         return biomeID == beach || biomeID == snowy_beach || biomeID == stony_shore || biomeID == mushroom_field_shore;
@@ -1788,6 +1821,14 @@ L_jigsaw:
         if (id < 0 || !isViableFeatureBiome(g->mc, structureType, id))
             goto L_not_viable;
         goto L_viable;
+    
+    case Abandoned_Camp:
+        if (g->mc <= MC_26_30) goto L_not_viable;
+        id = getBiomeAt(g, 0, x >> 2, 319>>2, z >> 2);
+        if (id < 0 || !isViableFeatureBiome(g->mc, structureType, id))
+            goto L_not_viable;
+        goto L_viable;
+
 
     case Mineshaft:
     case Stronghold:
@@ -2227,6 +2268,55 @@ int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
     case Monument:
         r->x = r->z = -29;
         r->sx = r->sz = 58;
+        return 1;
+    
+    case Ocean_Ruin:
+        float largeProb = 0, clusterProb = 0;
+        switch (biomeID)
+        {
+        // warm
+        case warm_ocean:
+        case lukewarm_ocean:
+        case deep_warm_ocean:
+        case deep_lukewarm_ocean:
+            largeProb = 0.3f;
+            clusterProb = 0.5f;
+            break;
+        // cold
+        case ocean:
+        case frozen_ocean:
+        case cold_ocean:
+            largeProb = 0.3f;
+            clusterProb = 0.25f;
+            break;
+        // deep cold
+        case deep_ocean:
+        case deep_cold_ocean:
+        case deep_frozen_ocean:
+            largeProb = 0.5f;
+            clusterProb = 0.4f;
+            break;
+        default:
+            return 0;
+        }
+        StructureConfig msconf;
+        getStructureConfig(Monument, mc, &msconf);
+        Pos region = chunkToRegion(x >> 4, z >> 4, msconf.regionSize);
+        setRegionSeed(seed, region.x, region.z, msconf.salt);
+        skipNextN(4);  // offset random
+        r->rotation = nextInt(4);
+        int isLarge = nextFloat() <= largeProb;
+        skipNextN(1); // rotation
+        int hasCluster = nextFloat() <= clusterProb;
+        if (hasCluster)
+        {
+            hasCluster = 1;            
+            skipNextN(16);
+            r->size = 4 + nextInt(5); // 4-8
+        }
+        r->large = isLarge;
+        r->cluster = hasCluster;
+        r->biome = biomeID;
         return 1;
 
     case Igloo:
