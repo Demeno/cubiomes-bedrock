@@ -34,7 +34,8 @@ enum MCVersion
     MC_1_21_60,
     MC_26_20,
     MC_26_30,
-    MC_NEWEST = MC_26_30,
+    MC_26_40, // 26.40.27
+    MC_NEWEST = MC_26_40,
 };
 
 enum Dimension
@@ -172,7 +173,9 @@ enum BiomeID
     // 1.21 Winter Drop
     pale_garden                     = 186,
     // 26.30
-    sulfur_caves                    = 187,
+    dappled_forest                  = 187,
+    // 26.40.27
+    sulfur_caves                    = 188
 };
 
 

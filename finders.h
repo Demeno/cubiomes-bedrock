@@ -43,6 +43,7 @@ enum StructureType
     End_Island,
     Trail_Ruins,
     Trial_Chambers,
+    Abandoned_Camp,
     FEATURE_NUM
 };
 
@@ -82,6 +83,8 @@ STRUCT(StructureVariant)
     uint8_t airpocket   :1; // portal with air pocket
     uint8_t basement    :1; // igloo with basement
     uint8_t cracked     :1; // geode with crack
+    uint8_t large       :1; // large ocean ruin
+    uint8_t cluster     :1; // has cluster of ocean ruin
     float_t thick;          // ravine thickness
     float_t yaw;            // ravine yaw
     float_t pitch;          // ravine pitch
@@ -876,8 +879,7 @@ Pos getLargeStructureChunkInRegion(StructureConfig config, uint64_t seed, int re
     Pos pos;
     switch(config.structType)
     {
-    case Trail_Ruins:
-    case Trial_Chambers:
+    case Abandoned_Camp:
     {
     const uint64_t K = 0x5deece66dULL;
     const uint64_t M = (1ULL << 48) - 1;
