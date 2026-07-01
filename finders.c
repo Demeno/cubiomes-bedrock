@@ -1694,6 +1694,7 @@ L_feature:
         uint64_t m = (1ULL << (meadow - 128) | 1ULL << (sunflower_plains - 128));
         if (!areBiomesViable(g, x, 319, z, 2, g_village_biomes, m, 0))
             goto L_not_viable;
+        viable = getBiomeAt(g, 0, x >> 2, 319>>2, z >> 2);
         goto L_viable;
     }
 
@@ -2107,6 +2108,9 @@ int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
             else if (t < 9) { r->start = 4; sx =  9; sy = 6; sz =  9; } // savanna_meeting_point_4
             else  UNREACHABLE();
             break;
+        case snowy_taiga:
+            r->biome = taiga;
+            // fallthrough
         case taiga:
             t = nextInt(2+2);
             if      (t < 2) { r->start = 1; sx = 22; sy = 3; sz = 18; } // taiga_meeting_point_1
@@ -2425,6 +2429,56 @@ int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
         r->y = nextInt(i);
         r->biome = biomeID;
         return 1;
+
+    case Abandoned_Camp:
+    {
+        static const uint8_t repTent[10][3] = {
+            {8,8,8}, {8,8,8}, {8,8,8}, {6,8,8}, {8,8,8},
+            {8,8,8}, {8,8,8}, {8,8,8}, {6,8,8}, {8,8,8},
+        };
+
+        uint64_t rng = chunkGenerateRnd(seed, cx, cz);
+        int rotIdx  = JnextInt(&rng, 4);
+        int tentIdx = JnextInt(&rng, 10);
+
+        sx = repTent[tentIdx][0];
+        sy = repTent[tentIdx][1];
+        sz = repTent[tentIdx][2];
+        int ex, ez;
+        switch (rotIdx)
+        {
+        case 0: ex =  (sx-1); ez =  (sz-1); r->sx = sx; r->sz = sz; break;
+        case 1: ex = -(sz-1); ez =  (sx-1); r->sx = sz; r->sz = sx; break;
+        case 2: ex = -(sx-1); ez = -(sz-1); r->sx = sx; r->sz = sz; break;
+        default:ex =  (sz-1); ez = -(sx-1); r->sx = sz; r->sz = sx; break;
+        }
+        r->x = ex / 2;
+        r->z = ez / 2;
+        r->sy = sy;
+        r->rotation = (uint8_t) rotIdx;
+        r->start = (uint8_t) tentIdx; // tent piece index (0-9): see getCampTentName()
+        r->biome = biomeID;
+
+        int arr[48];
+        for (int i = 0; i < 48; i++)
+            arr[i] = i;
+        // fisher-yates shuffle
+        for (int n = 48; n > 1; n--)
+        {
+            int k = JnextInt(&rng, n);
+            int tmp = arr[k];
+            arr[k] = arr[n-1];
+            arr[n-1] = tmp;
+        }
+        int campIdx = arr[0]; // 0-47: see getCampsiteName()
+        r->size = (uint8_t) campIdx;
+        // secret chest
+        r->secret = (campIdx == 46) ||                            // campsite_default_special_8
+                    (campIdx == 1 && biomeID == sparse_jungle) || // campsite_sparse_jungle_2
+                    (campIdx == 0 && biomeID == birch_forest ) || // campsite_birch_forest_1
+                    (tentIdx == 4 && biomeID == cherry_grove );   // tent_cherry_grove_4
+        return 1;
+    }
 
     default:
         return 0;
@@ -7518,6 +7572,10 @@ static const int g_biome_para_range_262_diff[][13] = {
 {sulfur_caves            ,  IMIN, IMAX,  IMIN, IMAX,  IMIN, IMAX,  IMIN, IMAX,  2000, 9000,  IMIN,-9500},
 {-1,0,0,0,0,0,0,0,0,0,0,0,0}};
 
+static const int g_biome_para_range_264_diff[][13] = {
+{dappled_forest          , -4500,-1500,-10000,-3500,   300, 3000, -2225,  500,  IMIN, IMAX,  5666, 7666},
+{-1,0,0,0,0,0,0,0,0,0,0,0,0}};
+
 /**
  * Gets the min/max parameter values within which a biome change can occur.
  */
@@ -7555,6 +7613,14 @@ const int *getBiomeParaLimits(int mc, int id)
     if (mc < MC_1_18)
         return NULL;
     int i;
+    if (mc > MC_26_30)
+    {
+        for (i = 0; g_biome_para_range_264_diff[i][0] != -1; i++)
+        {
+            if (g_biome_para_range_264_diff[i][0] == id)
+                return &g_biome_para_range_264_diff[i][1];
+        }
+    }
     if (mc > MC_1_21_60)
     {
         for (i = 0; g_biome_para_range_262_diff[i][0] != -1; i++)

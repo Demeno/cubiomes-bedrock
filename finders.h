@@ -85,6 +85,7 @@ STRUCT(StructureVariant)
     uint8_t cracked     :1; // geode with crack
     uint8_t large       :1; // large ocean ruin
     uint8_t cluster     :1; // has cluster of ocean ruin
+    uint8_t secret      :1; // camp secret chest
     float_t thick;          // ravine thickness
     float_t yaw;            // ravine yaw
     float_t pitch;          // ravine pitch
@@ -919,9 +920,13 @@ static inline ATTR(const)
 Pos getLargeStructurePos(StructureConfig config, uint64_t seed, int regX, int regZ)
 {
     Pos pos = getLargeStructureChunkInRegion(config, seed, regX, regZ);
-
-    pos.x = (int)(((uint64_t)regX*config.regionSize + pos.x) << 4)+8;
-    pos.z = (int)(((uint64_t)regZ*config.regionSize + pos.z) << 4)+8;
+    pos.x = (int)(((uint64_t)regX*config.regionSize + pos.x) << 4);
+    pos.z = (int)(((uint64_t)regZ*config.regionSize + pos.z) << 4);
+    if (config.structType != Abandoned_Camp)
+    {
+        pos.x+=8;
+        pos.z+=8;
+    }
     return pos;
 }
 
