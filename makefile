@@ -42,7 +42,7 @@ generator.o: generator.c generator.h
 biomenoise.o: biomenoise.c
 	$(CC) -c $(CFLAGS) $<
 
-terrain.o: cave.c cave.h
+cave.o: cave.c cave.h
 	$(CC) -c $(CFLAGS) $<
 
 biometree.o: biometree.c
