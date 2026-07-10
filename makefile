@@ -30,7 +30,7 @@ release: CFLAGS += -fPIC
 endif
 
 
-libcubiomes: noise.o biomes.o layers.o biomenoise.o generator.o finders.o util.o quadbase.o mt.o
+libcubiomes: noise.o biomes.o layers.o biomenoise.o cave.o generator.o finders.o util.o quadbase.o mt.o
 	$(AR) $(ARFLAGS) libcubiomes.a $^
 
 finders.o: finders.c finders.h
@@ -40,6 +40,9 @@ generator.o: generator.c generator.h
 	$(CC) -c $(CFLAGS) $<
 
 biomenoise.o: biomenoise.c
+	$(CC) -c $(CFLAGS) $<
+
+terrain.o: cave.c cave.h
 	$(CC) -c $(CFLAGS) $<
 
 biometree.o: biometree.c

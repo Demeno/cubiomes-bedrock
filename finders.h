@@ -3,6 +3,7 @@
 
 
 #include "generator.h"
+#include "cave.h"
 
 
 #ifdef __cplusplus
@@ -36,6 +37,7 @@ enum StructureType
     Stronghold,
     Desert_Well,
     Geode,
+    Dungeon,
     Fortress,
     Bastion,
     End_City,
@@ -510,6 +512,48 @@ enum
     MINESHAFT_PIECES_MAX = 1024,
 };
 
+STRUCT(DungeonData)
+{
+    Pos3 pos;       // spawner
+    Pos3 chests[2]; // chests
+    int  mobType;   // skeleton, zombie, spider
+};
+enum
+{   // mob types
+    DUNGEON_ZOMBIE,
+    DUNGEON_SKELETON,
+    DUNGEON_SPIDER,
+};
+enum {
+    DUNGEON_MAX_PER_CHUNK = 4+10,               // max number of dungeons per chunk
+    DUNGEON_CAP = 1<<DUNGEON_MAX_PER_CHUNK,  // 16384 slots, generous for one chunk
+};
+
+int getDungeons(
+        const BiomeNoise    *bn,
+        const TerrainNoise  *tn,
+        const TerrainShaper *ts, 
+        const CaveNoise     *cn,
+        int mc,
+        uint64_t seed,
+        int chunkX, int chunkZ,
+        DungeonData *out, int nout);
+
+/* Generate the scattered structure pieces of a pillager outpost. The maximum number
+ * of pieces that are generated is limited to 'n'.
+ */
+int getOutpostPieces(Piece *pieces, uint64_t seed, int chunkX, int chunkZ);
+enum
+{   // Outpost piece types
+    OUTPOST_CAGE1, // cage1 is the golem cage in Bedrock
+    OUTPOST_CAGE2,
+    OUTPOST_CAGE_WITH_ALLAYS,
+    OUTPOST_LOGS,
+    OUTPOST_TARGETS,
+    OUTPOST_TENT1,
+    OUTPOST_TENT2,
+    OUTPOST_PIECES_MAX = 4,
+};
 
 int getEndGatewayPos(uint64_t seed, EndNoise en, SurfaceNoise sn, int chunkX, int chunkZ, Pos *pos);
 
@@ -922,7 +966,7 @@ Pos getLargeStructurePos(StructureConfig config, uint64_t seed, int regX, int re
     Pos pos = getLargeStructureChunkInRegion(config, seed, regX, regZ);
     pos.x = (int)(((uint64_t)regX*config.regionSize + pos.x) << 4);
     pos.z = (int)(((uint64_t)regZ*config.regionSize + pos.z) << 4);
-    if (config.structType != Abandoned_Camp)
+    if (config.structType != Abandoned_Camp && config.structType != Outpost)
     {
         pos.x+=8;
         pos.z+=8;

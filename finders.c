@@ -56,6 +56,7 @@ int getStructureConfig(int structureType, int mc, StructureConfig *sconf)
     s_desert_well           = {-1160484816,  1,  1, Desert_Well,    DIM_OVERWORLD, 500},
     s_geode_117             = { 1974035328,  1,  1, Geode,          DIM_OVERWORLD, 53},
     s_geode                 = { 1974035328,  1,  1, Geode,          DIM_OVERWORLD, 24},
+    s_dungeon               = {          0,  1,  1, Dungeon,        DIM_OVERWORLD, 0},
     s_end_island            = {          0,  1,  1, End_Island,     DIM_END,       14},
     s_ravine                = {          0,  1,  1, Ravine,         DIM_OVERWORLD, 0},
     s_lavalake              = {          0,  1,  1, Lava_Lake,      DIM_OVERWORLD, 8}
@@ -150,6 +151,11 @@ int getStructureConfig(int structureType, int mc, StructureConfig *sconf)
     case Geode:
         *sconf = mc < MC_1_18 ? s_geode_117 : s_geode;
         return mc >= MC_1_17;
+    case Dungeon:
+        *sconf = s_dungeon;
+        // only 1.18+ dungeons are supported
+        // the cave terrain uses 1.18+
+        return mc >= MC_1_18;
     case Trail_Ruins:
         *sconf = s_trail_ruins;
         return mc >= MC_1_20;
@@ -307,6 +313,10 @@ int getStructurePos(int structureType, int mc, uint64_t seed, int regX, int regZ
         pos->z += 4;
         return 1;
     }
+
+    case Dungeon:
+        // multiple dungeons can generate per chunk; use getDungeons() instead
+        return 0;
 
     default:
         fprintf(stderr,
@@ -1801,6 +1811,11 @@ L_feature:
             goto L_not_viable;
         goto L_viable;
 
+    case Dungeon:
+        if (g->mc < MC_1_18)
+            goto L_not_viable;
+        goto L_viable;
+
     case Ancient_City:
         if (g->mc <= MC_1_18) goto L_not_viable;
         id = getBiomeAt(g, 0, x>>2, -27>>2, z>>2);
@@ -1828,6 +1843,7 @@ L_jigsaw:
         id = getBiomeAt(g, 0, x >> 2, 319>>2, z >> 2);
         if (id < 0 || !isViableFeatureBiome(g->mc, structureType, id))
             goto L_not_viable;
+        viable = id;
         goto L_viable;
 
 
@@ -2128,6 +2144,14 @@ int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
             sx = sy = sz = 0;
             return 0;
         }
+        goto L_rotate_village_bastion;
+
+    case Outpost:
+        setRegionSeed(seed, rpos.x, rpos.z, sc.salt);
+        skipNextN(4);
+        r->rotation = nextInt(4);
+        sx = sz = 15;
+        sy = 21;
         goto L_rotate_village_bastion;
 
     case Bastion:
@@ -4322,6 +4346,438 @@ int getMineshaftPieces(Piece *list, int n, int mc, uint64_t seed, int chunkX, in
     }
 
     return env.count;
+}
+
+//==============================================================================
+// Dungeon Generator
+//==============================================================================
+
+typedef struct {
+    int64_t key;
+    int8_t val;
+    uint8_t used;
+} DungeonWSCell;
+enum {
+    AIR               = 0,
+    SOLID             = 1,
+    COBBLESTONE       = SOLID,
+    MOSSY_COBBLESTONE = SOLID,
+    CHEST             = SOLID,
+    SPAWNER           = SOLID,
+};
+
+static uint64_t dungeonWsHash(int64_t key)
+{
+    uint64_t h = (uint64_t) key;
+    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ULL;
+    h ^= h >> 33;
+    return h;
+}
+
+static int64_t dungeonWsKey(int x, int y, int z, int originX, int originZ)
+{
+    return ((int64_t)(uint16_t)(x - originX) << 32)
+         | ((int64_t)(uint16_t)(z - originZ) << 16)
+         | (uint16_t)(y);
+}
+
+static void dungeonWsSet(DungeonWSCell *tab, int cap, int64_t key, int val)
+{
+    uint64_t h = dungeonWsHash(key) & (uint32_t)(cap - 1);
+    for (int i = 0; i < cap; i++)
+    {
+        int idx = (int)((h + (unsigned)i) & (uint32_t)(cap - 1));
+        if (!tab[idx].used || tab[idx].key == key)
+        {
+            tab[idx].used = 1;
+            tab[idx].key = key;
+            tab[idx].val = (int8_t) val;
+            return;
+        }
+    }
+}
+
+static int dungeonWsFind(const DungeonWSCell *tab, int cap, int64_t key, int *val)
+{
+    uint64_t h = dungeonWsHash(key) & (uint32_t)(cap - 1);
+    for (int i = 0; i < cap; i++)
+    {
+        int idx = (int)((h + (unsigned)i) & (uint32_t)(cap - 1));
+        if (!tab[idx].used)
+            return 0;
+        if (tab[idx].key == key)
+        {
+            *val = tab[idx].val;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int dungeonCachedSolid(const BiomeNoise *bn, const TerrainNoise *tn,
+        const TerrainShaper *ts, const CaveNoise *cn,
+        TerrainCache *tc,
+        DungeonWSCell *ws, int wscap, int originX, int originZ,
+        int x, int y, int z)
+{
+    int64_t key = dungeonWsKey(x, y, z, originX, originZ);
+    int val;
+    if (dungeonWsFind(ws, wscap, key, &val))
+        return val == SOLID;
+
+    int solid;
+    if (y <= -55)
+        solid = 1; // replace lava
+    else
+        solid = isSolidCached(bn, tn, ts, cn, tc, x, y, z);
+
+    val = solid ? SOLID : AIR;
+    dungeonWsSet(ws, wscap, key, val);
+    return val == SOLID;
+}
+
+static int dungeonPlace(const BiomeNoise *bn, const TerrainNoise *tn,
+        const TerrainShaper *ts, const CaveNoise *cn, TerrainCache *tc,
+        DungeonWSCell *ws, int wscap, int originX, int originZ,
+        int ox, int oy, int oz, DungeonData *out, int *n, int nout)
+{
+    int xr = nextInt(2) + 2;
+    int zr = nextInt(2) + 2;
+    int minX = -xr - 1;
+    int maxX =  xr + 1;
+    int minY = -1;
+    int maxY =  4;
+    int minZ = -zr - 1;
+    int maxZ =  zr + 1;
+
+    // validate floor and ceiling
+    int floorY   = oy + minY;
+    int ceilingY = oy + maxY;
+    for (int dx = minX; dx <= maxX; dx++)
+    for (int dz = minZ; dz <= maxZ; dz++)
+    {
+        if (!dungeonCachedSolid(bn,tn,ts,cn,tc, ws, wscap, originX, originZ, ox+dx, floorY, oz+dz))
+            return 0;
+        if (!dungeonCachedSolid(bn,tn,ts,cn,tc, ws, wscap, originX, originZ, ox+dx, ceilingY, oz+dz))
+            return 0;
+    }
+
+    // count side holes at floor level
+    int holeCount = 0;
+    for (int dx = minX; dx <= maxX; dx++)
+    for (int dz = minZ; dz <= maxZ; dz++)
+    {
+        if (dx != minX && dx != maxX && dz != minZ && dz != maxZ)
+            continue;
+
+        int hx = ox + dx;
+        int hz = oz + dz;
+        if (!dungeonCachedSolid(bn,tn,ts,cn,tc, ws, wscap, originX, originZ, hx, oy,   hz) &&
+            !dungeonCachedSolid(bn,tn,ts,cn,tc, ws, wscap, originX, originZ, hx, oy+1, hz))
+        {
+            holeCount++;
+            if (holeCount > 5)
+                return 0;
+        }
+    }
+
+    if (holeCount < 1)
+        return 0;
+
+    // build walls
+    for (int dx = minX; dx <= maxX; dx++)
+    for (int dy = minY; dy <= maxY; dy++)
+    for (int dz = minZ; dz <= maxZ; dz++)
+    {
+        int wx = ox+dx, wy = oy+dy, wz = oz+dz;
+        int64_t key = dungeonWsKey(wx, wy, wz, originX, originZ);
+
+        if (dx == minX || dy == minY || dz == minZ ||
+            dx == maxX || dy == maxY || dz == maxZ)
+        {
+            if (!dungeonCachedSolid(bn,tn,ts,cn,tc, ws, wscap, originX, originZ, wx, wy-1, wz))
+                dungeonWsSet(ws, wscap, key, AIR);
+            else
+            {
+                if (dy == -1 && nextInt(4) != 0) 
+                    dungeonWsSet(ws, wscap, key, MOSSY_COBBLESTONE);
+                else 
+                    dungeonWsSet(ws, wscap, key, COBBLESTONE);
+            }
+        }
+        else
+        {
+            dungeonWsSet(ws, wscap, key, AIR);
+        }
+    }
+
+    // place chests
+    int xsize = xr * 2 + 1;
+    int zsize = zr * 2 + 1;
+    for (int i = 0; i < 2; i++) // 2 chests
+    for (int j = 0; j < 3; j++) // 3 tries
+    {
+        // z -> x in bedrock
+        int zc = oz + nextInt(zsize) - zr;
+        int yc = oy;
+        int xc = ox + nextInt(xsize) - xr;
+        int64_t ckey = dungeonWsKey(xc, yc, zc, originX, originZ);
+
+        int val;
+        dungeonWsFind(ws, wscap, ckey, &val);
+        if (val == AIR)
+        {
+            static const int ddx[] = {-1, 1, 0, 0};
+            static const int ddz[] = { 0, 0, 1,-1};
+            int wallCount = 0;
+            int ok = 1;
+            for (int k = 0; k < 4; k++)
+            {
+                int64_t nk = dungeonWsKey(xc+ddx[k], yc, zc+ddz[k], originX, originZ);
+                dungeonWsFind(ws, wscap, nk, &val);
+                if (val == SOLID)
+                    wallCount++;
+                // early exit
+                if (wallCount > 1) {
+                    ok = 0;
+                    break;
+                }
+            }
+            if (ok && wallCount == 1)
+            {
+                //printf("chest %d %d %d\n", xc, yc, zc);
+                dungeonWsSet(ws, wscap, ckey, CHEST);
+                next(); // loot seed
+                out[*n].chests[i].x = xc;
+                out[*n].chests[i].y = yc;
+                out[*n].chests[i].z = zc;
+                break;
+            }
+        }
+    }
+
+    // place spawner + pick mob type
+    dungeonWsSet(ws, wscap, dungeonWsKey(ox, oy, oz, originX, originZ), SPAWNER);
+    int type = DUNGEON_ZOMBIE; // default
+    switch (nextInt(4))
+    {
+        case 0: type = DUNGEON_SKELETON; break;
+        case 1: type = DUNGEON_ZOMBIE;   break;
+        case 2: type = DUNGEON_ZOMBIE;   break;
+        case 3: type = DUNGEON_SPIDER;   break;
+    }
+
+    if (out && *n < nout)
+    {
+        out[*n].pos.x = ox;
+        out[*n].pos.y = oy;
+        out[*n].pos.z = oz;
+        out[*n].mobType = type;
+    }
+    (*n)++;
+    return 1;
+}
+
+// skip nearby dungeons
+// they generate after mineshafts,
+// causing RNG shifts within the same chunk.
+static int mineshaftNearby(int mc, uint64_t seed, int chunkX, int chunkZ)
+{
+    const int x0 = chunkX * 16;
+    const int z0 = chunkZ * 16;
+    const int x1 = x0 + 15;
+    const int z1 = z0 + 15;
+    const int radius = 7;
+    Piece pieces[512];
+
+    for (int cz = chunkZ - radius; cz <= chunkZ + radius; cz++)
+    {
+        for (int cx = chunkX - radius; cx <= chunkX + radius; cx++)
+        {
+            int n = getMineshaftPieces(pieces, sizeof(pieces)/sizeof(pieces[0]), mc, seed, cx, cz, MINESHAFT_NORMAL);
+            for (int i = 0; i < n; i++)
+            {
+                if (pieces[i].bb1.x >= x0 && pieces[i].bb0.x <= x1 &&
+                    pieces[i].bb1.z >= z0 && pieces[i].bb0.z <= z1)
+                    return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+int getDungeons(
+    const BiomeNoise    *bn,
+    const TerrainNoise  *tn,
+    const TerrainShaper *ts,
+    const CaveNoise     *cn,
+    int mc, uint64_t seed,
+    int chunkX, int chunkZ,
+    DungeonData *out, int nout)
+{
+    if (mineshaftNearby(mc, seed, chunkX, chunkZ) || 
+        mc < MC_1_18) // not supported
+        return 0;
+
+    DungeonWSCell *ws = (DungeonWSCell*) calloc(DUNGEON_CAP, sizeof(DungeonWSCell));
+    if (!ws)
+        return 0;
+    TerrainCache *tc = (TerrainCache*) malloc(sizeof(TerrainCache));
+    if (!tc)
+    {
+        free(ws);
+        return 0;
+    }
+    initTerrainCache(tc);
+
+    int originX = chunkX * 16 + 8;
+    int originZ = chunkZ * 16 + 8;
+    int n = 0;
+
+    setPopulationSeed(seed, chunkX, chunkZ);
+    if (mc >= MC_26_20) // actually 1.21.120+
+        skipNextN(1);
+
+    // below dungeon
+    for (int idx = 0; idx < 4; idx++)
+    {
+        int x = nextInt(16) + originX;
+        int y = nextIntRange(-58, 0); // -58 ~ -1
+        int z = nextInt(16) + originZ;
+        dungeonPlace(bn,tn,ts,cn, tc, ws, DUNGEON_CAP, originX, originZ, x, y, z, out, &n, nout);
+    }
+    // above dungeon
+    for (int idx = 0; idx < 10; idx++)
+    {
+        int x = nextInt(16) + originX;
+        int y = nextIntRange(0, 320); // 0 ~ 319
+        int z = nextInt(16) + originZ;
+        dungeonPlace(bn,tn,ts,cn, tc, ws, DUNGEON_CAP, originX, originZ, x, y, z, out, &n, nout);
+    }
+
+    free(ws);
+    free(tc);
+    return n;
+}
+
+//==============================================================================
+// Outpost Generator
+//==============================================================================
+
+static const struct
+{
+    Pos3 size;
+    const char* name;
+}
+outpost_info[] = {
+    // vanilla\structures\pillageroutpost
+    {{6, 5, 6}, "feature_cage1"}, // cage1 is the golem cage in Bedrock
+    {{6, 5, 6}, "feature_cage2"},
+    {{7, 4, 7}, "feature_cage_with_allays"},
+    {{6, 3, 7}, "feature_logs"},
+    {{3, 3, 7}, "feature_targets"},
+    {{6, 5, 7}, "feature_tent1"},
+    {{6, 5, 7}, "feature_tent2"},
+};
+
+const struct {
+    int x, z;
+}
+scatter_bases[4] = {
+    { 16, 16},
+    {-16, 16},
+    { 16,-16},
+    {-16,-16}
+};
+
+int getOutpostPieces(Piece* pieces, uint64_t seed, int chunkX, int chunkZ)
+{
+    StructureConfig sc;
+    getStructureConfig(Outpost, MC_NEWEST, &sc);
+    Pos rpos = chunkToRegion(chunkX, chunkZ, sc.regionSize);
+    setRegionSeed(seed, rpos.x, rpos.z, sc.salt);
+    skipNextN(4);
+
+    int rotation = nextInt(4);
+    int baseX = chunkX << 4;
+    int baseZ = chunkZ << 4;
+
+    int size = 15;
+    int ox, oz;
+    switch (rotation) {
+        case 0: ox =  size; oz =  size; break;
+        case 1: ox = -size; oz =  size; break;
+        case 2: ox = -size; oz = -size; break;
+        case 3: ox =  size; oz = -size; break;
+    }
+
+    int centerX = baseX + ox;
+    int centerZ = baseZ + oz;
+    if (baseX <= centerX) centerX = baseX;
+    if (baseZ <= centerZ) centerZ = baseZ;
+    centerX += 8;
+    centerZ += 8;
+
+    Pos3 positions[4];
+    for (int i = 0; i < 4; i++) {
+        positions[i].x = centerX + scatter_bases[i].x - (4 - nextInt(8));
+        positions[i].y = 90;
+        positions[i].z = centerZ + scatter_bases[i].z - (4 - nextInt(8));
+    }
+
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        if (nextFloat() >= 0.9f)
+            continue;
+
+        int rot = nextInt(4);
+        int type = nextInt(7);
+
+        Piece* p = &pieces[n];
+        p->name = outpost_info[type].name;
+        p->pos.x = positions[i].x;
+        p->pos.y = positions[i].y;
+        p->pos.z = positions[i].z;
+        p->bb0.x = p->pos.x;
+        p->bb0.y = p->pos.y;
+        p->bb0.z = p->pos.z;
+        p->bb1.x = p->pos.x;
+        p->bb1.y = p->pos.y;
+        p->bb1.z = p->pos.z;
+
+        int sizeX = outpost_info[type].size.x;
+        int sizeY = outpost_info[type].size.y;
+        int sizeZ = outpost_info[type].size.z;
+
+        switch(rot) {
+            case 0: // North
+                p->bb1.x += sizeX - 1;
+                p->bb1.y += sizeY - 1;
+                p->bb1.z += sizeZ - 1;
+                break;
+            case 1: // East
+                p->bb0.x -= sizeZ + 1;
+                p->bb1.y += sizeY - 1;
+                p->bb1.z += sizeX - 1;
+                break;
+            case 2: // South
+                p->bb0.x -= sizeX + 1;
+                p->bb1.y += sizeY - 1;
+                p->bb0.z -= sizeZ + 1;
+                break;
+            case 3: // West
+                p->bb1.x += sizeZ - 1;
+                p->bb1.y += sizeY - 1;
+                p->bb0.z -= sizeX + 1;
+                break;
+        }
+        p->rot = (uint8_t)rot;
+        p->type = (int8_t)type;
+    
+        n++;
+    }
+    return n;
 }
 
 //==============================================================================

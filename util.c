@@ -287,6 +287,7 @@ const char* struct2str(int stype)
     case Ruined_Portal:     return "ruined_portal";
     case Ruined_Portal_N:   return "ruined_portal_nether";
     case Geode:             return "amethyst_geode";
+    case Dungeon:           return "dungeon";
     case Ancient_City:      return "ancient_city";
     case Trail_Ruins:       return "trail_ruins";
     case Trial_Chambers:    return "trial_chambers";
