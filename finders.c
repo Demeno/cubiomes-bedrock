@@ -1117,7 +1117,8 @@ Pos getSpawn(const Generator *g)
     if (g->mc < MC_1_18)
     {
         const int grid = 10;
-        int step = grid;
+        int step = g->mc < MC_1_12 ? 0 : 10;
+        int sx   = g->mc < MC_1_12 ? 0 : 1;
 
         Range r = {4, 0, 0, grid, grid, 0, 1};
         int *biomeIds = allocCache(g, r);
@@ -1137,7 +1138,7 @@ Pos getSpawn(const Generator *g)
             }
 
             for (int z = 1; z < grid-1; z++) {
-                for (int x = 1; x < grid-1; x++) {
+                for (int x = sx; x < grid-1; x++) {
                     if (surroundingBiomes(biomeIds, grid, x, z)) {
                         spawn.x = 4 * (x + step);
                         spawn.z = 4 * z;
