@@ -3352,20 +3352,20 @@ int strongholdGetChestPositions(const Piece *p, uint8_t data, Pos3 out[2])
     int n = 0;
     if (p->type == SH_CHEST_CORRIDOR)
     {
-        out[n++] = transformPos(p, 3, 1, 3);
+        out[n++] = transformPos(p->bb, p->rot, 3, 1, 3);
     }
     else if (p->type == SH_ROOM_CROSSING && data == 2)
     {
         // store room
-        out[n++] = transformPos(p, 3, 1, 8);
+        out[n++] = transformPos(p->bb, p->rot, 3, 1, 8);
     }
     else if (p->type == SH_LIBRARY)
     {
         // first floor
-        out[n++] = transformPos(p, 3, 1, 5);
+        out[n++] = transformPos(p->bb, p->rot, 3, 1, 5);
         if (data)
             // second floor
-            out[n++] = transformPos(p, 12, 5, 1);
+            out[n++] = transformPos(p->bb, p->rot, 12, 5, 1);
     }
     return n;
 }
@@ -3404,48 +3404,50 @@ int strongholdPieceRngCountInChunk(const Piece *p, uint8_t data,
 static
 void setPortalFramePos(StrongholdPortalFrame *frames, const Piece *portal)
 {
-    switch (portal->rot)
+    BB bb = portal->bb;
+    int rot = portal->rot;
+    switch (rot)
     {
     case 0:
     case 1:
-        frames[0].pos = transformPos(portal, 4, 3, 8);
-        frames[1].pos = transformPos(portal, 5, 3, 8);
-        frames[2].pos = transformPos(portal, 6, 3, 8);
-        frames[3].pos = transformPos(portal, 4, 3, 12);
-        frames[4].pos = transformPos(portal, 5, 3, 12);
-        frames[5].pos = transformPos(portal, 6, 3, 12);
-        frames[6].pos = transformPos(portal, 3, 3, 9);
-        frames[7].pos = transformPos(portal, 3, 3, 10);
-        frames[8].pos = transformPos(portal, 3, 3, 11);
-        frames[9].pos = transformPos(portal, 7, 3, 9);
-        frames[10].pos = transformPos(portal, 7, 3, 10);
-        frames[11].pos = transformPos(portal, 7, 3, 11);
+        frames[0].pos = transformPos(bb, rot, 4, 3, 8);
+        frames[1].pos = transformPos(bb, rot, 5, 3, 8);
+        frames[2].pos = transformPos(bb, rot, 6, 3, 8);
+        frames[3].pos = transformPos(bb, rot, 4, 3, 12);
+        frames[4].pos = transformPos(bb, rot, 5, 3, 12);
+        frames[5].pos = transformPos(bb, rot, 6, 3, 12);
+        frames[6].pos = transformPos(bb, rot, 3, 3, 9);
+        frames[7].pos = transformPos(bb, rot, 3, 3, 10);
+        frames[8].pos = transformPos(bb, rot, 3, 3, 11);
+        frames[9].pos = transformPos(bb, rot, 7, 3, 9);
+        frames[10].pos = transformPos(bb, rot, 7, 3, 10);
+        frames[11].pos = transformPos(bb, rot, 7, 3, 11);
         break;
     case 2:
     case 3:
-        frames[0].pos = transformPos(portal, 6, 3, 8);
-        frames[1].pos = transformPos(portal, 5, 3, 8);
-        frames[2].pos = transformPos(portal, 4, 3, 8);
-        frames[3].pos = transformPos(portal, 6, 3, 12);
-        frames[4].pos = transformPos(portal, 5, 3, 12);
-        frames[5].pos = transformPos(portal, 4, 3, 12);
-        if (portal->rot == 2)
+        frames[0].pos = transformPos(bb, rot, 6, 3, 8);
+        frames[1].pos = transformPos(bb, rot, 5, 3, 8);
+        frames[2].pos = transformPos(bb, rot, 4, 3, 8);
+        frames[3].pos = transformPos(bb, rot, 6, 3, 12);
+        frames[4].pos = transformPos(bb, rot, 5, 3, 12);
+        frames[5].pos = transformPos(bb, rot, 4, 3, 12);
+        if (rot == 2)
         {
-            frames[6].pos = transformPos(portal, 3, 3, 9);
-            frames[7].pos = transformPos(portal, 3, 3, 10);
-            frames[8].pos = transformPos(portal, 3, 3, 11);
-            frames[9].pos = transformPos(portal, 7, 3, 9);
-            frames[10].pos = transformPos(portal, 7, 3, 10);
-            frames[11].pos = transformPos(portal, 7, 3, 11);
+            frames[6].pos = transformPos(bb, rot, 3, 3, 9);
+            frames[7].pos = transformPos(bb, rot, 3, 3, 10);
+            frames[8].pos = transformPos(bb, rot, 3, 3, 11);
+            frames[9].pos = transformPos(bb, rot, 7, 3, 9);
+            frames[10].pos = transformPos(bb, rot, 7, 3, 10);
+            frames[11].pos = transformPos(bb, rot, 7, 3, 11);
         }
         else
         {
-            frames[6].pos = transformPos(portal, 7, 3, 9);
-            frames[7].pos = transformPos(portal, 7, 3, 10);
-            frames[8].pos = transformPos(portal, 7, 3, 11);
-            frames[9].pos = transformPos(portal, 3, 3, 9);
-            frames[10].pos = transformPos(portal, 3, 3, 10);
-            frames[11].pos = transformPos(portal, 3, 3, 11);
+            frames[6].pos = transformPos(bb, rot, 7, 3, 9);
+            frames[7].pos = transformPos(bb, rot, 7, 3, 10);
+            frames[8].pos = transformPos(bb, rot, 7, 3, 11);
+            frames[9].pos = transformPos(bb, rot, 3, 3, 9);
+            frames[10].pos = transformPos(bb, rot, 3, 3, 10);
+            frames[11].pos = transformPos(bb, rot, 3, 3, 11);
         }
         break;
     default:

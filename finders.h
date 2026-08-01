@@ -63,8 +63,6 @@ STRUCT(StructureConfig)
 };
 
 
-STRUCT(Pos)  { int x, z; };
-STRUCT(Pos3) { int x, y, z; };
 
 
 STRUCT(StrongholdIter)

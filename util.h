@@ -9,6 +9,14 @@ extern "C"
 {
 #endif
 
+typedef struct {
+    int x, z;
+} Pos;
+
+typedef struct {
+    int x, y, z;
+} Pos3;
+
 typedef struct
 {
     int minX, minY, minZ;
@@ -112,45 +120,10 @@ static inline void rotatePos2D(
     }
 }
 
-static int applyXTransform(const Piece *p, int x, int z)
-{
-    switch (p->rot)
-    {
-    case 0: return p->bb.minX + x;
-    case 2: return p->bb.minX + x;
-    case 3: return p->bb.maxX - z;
-    case 1: return p->bb.minX + z;
-    default:
-        UNREACHABLE();
-    }
-}
-
-static int applyYTransform(const Piece *p, int y)
-{
-    return p->bb.minY + y;
-}
-
-static int applyZTransform(const Piece *p, int x, int z)
-{
-    switch (p->rot)
-    {
-    case 0: return p->bb.maxZ - z;
-    case 2: return p->bb.minZ + z;
-    case 3: return p->bb.minZ + x;
-    case 1: return p->bb.minZ + x;
-    default:
-        UNREACHABLE();
-    }
-}
-
-static Pos3 transformPos(const Piece *p, int x, int y, int z)
-{
-    Pos3 pos;
-    pos.x = applyXTransform(p, x, z);
-    pos.y = applyYTransform(p, y);
-    pos.z = applyZTransform(p, x, z);
-    return pos;
-}
+int applyXTransform(BB bb, int rot, int x, int z);
+int applyYTransform(BB bb, int y);
+int applyZTransform(BB bb, int rot, int x, int z);
+Pos3 transformPos(BB bb, int rot, int x, int y, int z);
 
 typedef struct
 {

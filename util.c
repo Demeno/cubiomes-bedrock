@@ -49,6 +49,47 @@ int sparseFind(const SparseCell *tab, int cap, int64_t key, int *val)
 }
 
 
+int applyXTransform(BB bb, int rot, int x, int z)
+{
+    switch (rot)
+    {
+    case 0: return bb.minX + x;
+    case 2: return bb.minX + x;
+    case 3: return bb.maxX - z;
+    case 1: return bb.minX + z;
+    default:
+        UNREACHABLE();
+    }
+}
+
+int applyYTransform(BB bb, int y)
+{
+    return bb.minY + y;
+}
+
+int applyZTransform(BB bb, int rot, int x, int z)
+{
+    switch (rot)
+    {
+    case 0: return bb.maxZ - z;
+    case 2: return bb.minZ + z;
+    case 3: return bb.minZ + x;
+    case 1: return bb.minZ + x;
+    default:
+        UNREACHABLE();
+    }
+}
+
+Pos3 transformPos(BB bb, int rot, int x, int y, int z)
+{
+    Pos3 pos;
+    pos.x = applyXTransform(bb, rot, x, z);
+    pos.y = applyYTransform(bb, y);
+    pos.z = applyZTransform(bb, rot, x, z);
+    return pos;
+}
+
+
 uint64_t *loadSavedSeeds(const char *fnam, uint64_t *scnt)
 {
     FILE *fp = fopen(fnam, "r");
