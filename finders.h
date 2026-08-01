@@ -4,6 +4,7 @@
 
 #include "generator.h"
 #include "cave.h"
+#include "util.h"
 
 
 #ifdef __cplusplus
@@ -98,12 +99,14 @@ STRUCT(StructureVariant)
     uint8_t mirror;
     int16_t x, y, z;
     int16_t sx, sy, sz;
+    int32_t seed;           // tunnel seed
 };
 
 STRUCT(Piece)
 {
     const char *name;   // structure piece name
-    Pos3 pos, bb0, bb1; // position and bounding box limits
+    Pos3 pos;           // position
+    BB bb;              // bounding box limits
     uint8_t rot;        // rotation
     int8_t depth;
     int8_t type;
@@ -458,12 +461,23 @@ STRUCT(StrongholdPortalFrame)
     uint8_t hasEye;
 };
 
+STRUCT(StrongholdLayout)
+{
+    Piece    pieces[SH_PIECES_MAX];
+    uint8_t  data[SH_PIECES_MAX];
+    int      count;
+    uint64_t seed;
+};
+
+int getStrongholdLayout(StrongholdLayout *sh, int mc, uint64_t seed, int chunkX, int chunkZ);
+
 /* Find the portal frame positions and eye states for the first Portal Room in
- * a generated stronghold layout.
+ * 'sh'. This only performs the RNG calls needed to determine each of the 12
+ * eye states; it does not regenerate the stronghold layout.
  * Returns 12 on success, or 0 if no Portal Room was found.
  */
 int getStrongholdPortalFrames(StrongholdPortalFrame *frames,
-        const Piece *list, int count, uint64_t seed);
+        const StrongholdLayout *sh);
 
 /* Generate the structure pieces of a Nether Fortress. The maximum number of
  * pieces that are generated is limited to 'n'. A buffer length of around 400
@@ -554,6 +568,10 @@ enum
     OUTPOST_TENT2,
     OUTPOST_PIECES_MAX = 4,
 };
+
+int addTunnel(Piece *list, uint32_t tunnelSeed,
+              double x, double y, double z,
+              float yaw, float pitch, float thick, float scale);
 
 int getEndGatewayPos(uint64_t seed, EndNoise en, SurfaceNoise sn, int chunkX, int chunkZ, Pos *pos);
 

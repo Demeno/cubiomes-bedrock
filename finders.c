@@ -1,5 +1,6 @@
 #include "finders.h"
 #include "biomes.h"
+#include "util.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -139,7 +140,8 @@ int getStructureConfig(int structureType, int mc, StructureConfig *sconf)
         return mc >= MC_1_0; 
     case End_Island:
         *sconf = s_end_island;
-        return mc >= MC_1_13; // we only support decorator features for 1.13+
+        // exists pre-1.6 but logic unknown
+        return mc >= MC_1_6;
     case Desert_Well:
         *sconf = s_desert_well;
         // wells were introduced in 1.2, but we only support decorator features
@@ -1702,11 +1704,45 @@ L_feature:
 
     case Village:
     {
-        uint64_t m = (1ULL << (meadow - 128) | 1ULL << (sunflower_plains - 128));
-        if (!areBiomesViable(g, x, 319, z, 2, g_village_biomes, m, 0))
-            goto L_not_viable;
-        viable = getBiomeAt(g, 0, x >> 2, 319>>2, z >> 2);
-        goto L_viable;
+        if (g->mc < MC_1_18)
+        {
+            if (g->mc == MC_1_14)
+            {
+                g->entry = &g->ls.layers[L_VORONOI_1];
+                sampleX = chunkX * 16 + 9;
+                sampleZ = chunkZ * 16 + 9;
+            }
+            else
+            {
+                g->entry = &g->ls.layers[L_RIVER_MIX_4];
+                sampleX = chunkX * 4 + 2;
+                sampleZ = chunkZ * 4 + 2;
+            }
+            id = getBiomeAt(g, 0, sampleX, 0, sampleZ);
+            if (id < 0 || !isViableFeatureBiome(g->mc, structureType, id))
+                goto L_not_viable;
+            if (flags && (uint32_t) id != flags)
+                goto L_not_viable;
+            if (g->mc < MC_1_0)
+            {
+                sampleX = chunkX * 16 + 2;
+                sampleZ = chunkZ * 16 + 2;
+                id = getBiomeAt(g, 1, sampleX, 0, sampleZ);
+                if (id < 0 || !isViableFeatureBiome(g->mc, structureType, id))
+                    goto L_not_viable;
+            }
+            viable = id; // biome for viablility, useful for further analysis
+            goto L_viable;
+        }
+        else
+        {
+            uint64_t m = (1ULL << (meadow - 128) | 1ULL << (sunflower_plains - 128));
+            if (!areBiomesViable(g, x, 319, z, 2, g_village_biomes, m, 0))
+                goto L_not_viable;
+            viable = getBiomeAt(g, 0, x >> 2, 319>>2, z >> 2);
+            goto L_viable;
+        }
+        goto L_not_viable;
     }
 
     case Outpost:
@@ -2419,7 +2455,7 @@ int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
         setPopulationSeed(seed, cx, cz);
         if (nextInt(mc >= MC_1_21_60 ? 100 : 150) != 0) // rarity chance
             return 0;
-        nextInt(16);// x
+        r->x = nextInt(16) + cx * 16;
         if (mc >= MC_1_21_60)
         {
             r->y = nextIntRange(10, 68);
@@ -2431,11 +2467,12 @@ int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
             r->y = nextInt(i) + 20;
         }
         skipNextN(1);
-        nextInt(16);// z
+        r->z = nextInt(16) + cz * 16;
         r->yaw   = nextFloat() * 2.0f * PI;
         r->pitch = (nextFloat() - 0.5f) / 4.0f;
         r->thick = (nextFloat() + nextFloat()) * 3.0f;
         r->giant = nextFloat() < 0.05f;
+        r->seed  = next(); // tunneled seed
         r->underwater = isOceanic(biomeID);
         return 1;
 
@@ -2520,8 +2557,8 @@ void moveBelowSeaLevel(Piece *list, int count, int seaLevel, int minWorldHeight,
 
     for (i = 0; i < count; i++)
     {
-        if (list[i].bb0.y < boxMinY) boxMinY = list[i].bb0.y;
-        if (list[i].bb1.y > boxMaxY) boxMaxY = list[i].bb1.y;
+        if (list[i].bb.minY < boxMinY) boxMinY = list[i].bb.minY;
+        if (list[i].bb.maxY > boxMaxY) boxMaxY = list[i].bb.maxY;
     }
     int h = boxMaxY - boxMinY + 1;
     int y = h + minWorldHeight + 1;
@@ -2541,8 +2578,8 @@ void moveInsideHeights(Piece *list, int count, int minY, int maxY)
 
     for (i = 0; i < count; i++)
     {
-        if (list[i].bb0.y < boxMinY) boxMinY = list[i].bb0.y;
-        if (list[i].bb1.y > boxMaxY) boxMaxY = list[i].bb1.y;
+        if (list[i].bb.minY < boxMinY) boxMinY = list[i].bb.minY;
+        if (list[i].bb.maxY > boxMaxY) boxMaxY = list[i].bb.maxY;
     }
 
     int h = boxMaxY - boxMinY + 1;
@@ -2558,8 +2595,8 @@ void offsetPiecesVertically(Piece *list, int count, int dy)
     int i;
     for (i = 0; i < count; i++)
     {
-        list[i].bb0.y += dy;
-        list[i].bb1.y += dy;
+        list[i].bb.minY += dy;
+        list[i].bb.maxY += dy;
     }
 }
 
@@ -2607,16 +2644,17 @@ Piece *addEndCityPiece(PieceEnv *env, Piece *prev, int rot, int px, int py, int 
         p->pos.y = py;
         p->pos.z = pz;
 
-        p->bb0 = p->bb1 = p->pos;
-        p->bb1.y += sizeY;
+        Pos3 bb0 = p->pos, bb1 = p->pos;
+        bb1.y += sizeY;
         switch (rot)
         {
-        case 0: p->bb0.x += sizeX; p->bb0.z += sizeZ; break;
-        case 1: p->bb1.x -= sizeZ; p->bb0.z += sizeX; break;
-        case 2: p->bb1.x -= sizeX; p->bb1.z -= sizeZ; break;
-        case 3: p->bb0.x += sizeZ; p->bb1.z -= sizeX; break;
+        case 0: bb0.x += sizeX; bb0.z += sizeZ; break;
+        case 1: bb1.x -= sizeZ; bb0.z += sizeX; break;
+        case 2: bb1.x -= sizeX; bb1.z -= sizeZ; break;
+        case 3: bb0.x += sizeZ; bb1.z -= sizeX; break;
         default: UNREACHABLE();
         }
+        p->bb = bb3(bb0.x, bb0.y, bb0.z, bb1.x, bb1.y, bb1.z);
     }
     else
     {
@@ -2633,16 +2671,17 @@ Piece *addEndCityPiece(PieceEnv *env, Piece *prev, int rot, int px, int py, int 
         p->pos.y = prev->pos.y + dy;
         p->pos.z = prev->pos.z + dz;
 
-        p->bb0 = p->bb1 = p->pos;
-        p->bb1.y += sizeY;
+        Pos3 bb0 = p->pos, bb1 = p->pos;
+        bb1.y += sizeY;
         switch (rot)
         {
-        case 0: p->bb1.x += sizeX; p->bb1.z += sizeZ; break;
-        case 1: p->bb0.x -= sizeZ; p->bb1.z += sizeX; break;
-        case 2: p->bb0.x -= sizeX; p->bb0.z -= sizeZ; break;
-        case 3: p->bb1.x += sizeZ; p->bb0.z -= sizeX; break;
+        case 0: bb1.x += sizeX; bb1.z += sizeZ; break;
+        case 1: bb0.x -= sizeZ; bb1.z += sizeX; break;
+        case 2: bb0.x -= sizeX; bb0.z -= sizeZ; break;
+        case 3: bb1.x += sizeZ; bb0.z -= sizeX; break;
         default: UNREACHABLE();
         }
+        p->bb = bb3(bb0.x, bb0.y, bb0.z, bb1.x, bb1.y, bb1.z);
     }
     return p;
 }
@@ -2666,9 +2705,7 @@ int genPiecesRecusively(piecefunc_t gen, PieceEnv *env, Piece *current, int dept
         for (j = 0; j < *env->n; j++)
         {   // check for piece with bounding box collision
             Piece *q = env->list + j;
-            if (q->bb1.x >= p->bb0.x && q->bb0.x <= p->bb1.x &&
-                q->bb1.z >= p->bb0.z && q->bb0.z <= p->bb1.z &&
-                q->bb1.y >= p->bb0.y && q->bb0.y <= p->bb1.y)
+            if (intersects(&q->bb, &p->bb))
             {
                 if (current->depth != q->depth)
                     return 0;
@@ -2913,116 +2950,23 @@ static void setPortalFramePos(StrongholdPortalFrame *frames, const Piece *portal
 static void setPortalFrameEyes(StrongholdEnv *env, const Piece *portal);
 
 static
-void strongholdRotatedBox(Pos3 *bb0, Pos3 *bb1,
-        int x, int y, int z, int offx, int offy, int offz,
-        int sizex, int sizey, int sizez, int rot)
-{
-    int minX, minY, minZ, maxX, maxY, maxZ;
-    minY = y + offy;
-    maxY = y + sizey - 1 + offy;
-    switch (rot)
-    {
-    case 3: // west
-        minX = x - sizez + 1 + offz;
-        minZ = z + offx;
-        maxX = x + offz;
-        maxZ = z + sizex - 1 + offx;
-        break;
-    case 1: // east
-        minX = x + offz;
-        minZ = z + offx;
-        maxX = x + sizez - 1 + offz;
-        maxZ = z + sizex - 1 + offx;
-        break;
-    case 2: // south
-        minX = x + offx;
-        minZ = z + offz;
-        maxX = x + sizex - 1 + offx;
-        maxZ = z + sizez - 1 + offz;
-        break;
-    case 0: // north
-        minX = x + offx;
-        minZ = z - sizez + 1 + offz;
-        maxX = x + sizex - 1 + offx;
-        maxZ = z + offz;
-        break;
-    default:
-        UNREACHABLE();
-    }
-    *bb0 = (Pos3){minX, minY, minZ};
-    *bb1 = (Pos3){maxX, maxY, maxZ};
-}
-
-static
-int boxesIntersect(Pos3 a0, Pos3 a1, Pos3 b0, Pos3 b1)
-{
-    return a1.x >= b0.x && a0.x <= b1.x &&
-           a1.y >= b0.y && a0.y <= b1.y &&
-           a1.z >= b0.z && a0.z <= b1.z;
-}
-
-static
 Piece *getNextIntersectingPiece(
-        const Piece *list, int count, Pos3 bb0, Pos3 bb1)
+        const Piece *list, int count, const BB *bb)
 {
     int i;
     for (i = 0; i < count; i++)
     {
         const Piece *p = list + i;
-        if (boxesIntersect(p->bb0, p->bb1, bb0, bb1))
+        if (intersects(&p->bb, bb))
             return (Piece *) p;
     }
     return NULL;
 }
 
 static
-int applyXTransform(const Piece *p, int x, int z)
+int strongholdIsHighEnough(int minY)
 {
-    switch (p->rot)
-    {
-    case 0: return p->bb0.x + x;
-    case 2: return p->bb0.x + x;
-    case 3: return p->bb1.x - z;
-    case 1: return p->bb0.x + z;
-    default:
-        UNREACHABLE();
-    }
-}
-
-static
-int applyYTransform(const Piece *p, int y)
-{
-    return p->bb0.y + y;
-}
-
-static
-int applyZTransform(const Piece *p, int x, int z)
-{
-    switch (p->rot)
-    {
-    case 0: return p->bb1.z - z;
-    case 2: return p->bb0.z + z;
-    case 3: return p->bb0.z + x;
-    case 1: return p->bb0.z + x;
-    default:
-        UNREACHABLE();
-    }
-}
-
-static
-Pos3 transformPos(const Piece *p, int x, int y, int z)
-{
-    Pos3 pos;
-    pos.x = applyXTransform(p, x, z);
-    pos.y = applyYTransform(p, y);
-    pos.z = applyZTransform(p, x, z);
-    return pos;
-}
-
-static
-int strongholdIsHighEnough(Pos3 bb0)
-{
-    return bb0.y > 10;
+    return minY > 10;
 }
 
 static
@@ -3061,7 +3005,7 @@ Piece *addStrongholdPiece(StrongholdEnv *env, int typ,
         int x, int y, int z, int facing, int pieceId)
 {
     Piece piece;
-    Pos3 bb0, bb1;
+    BB bb;
     Piece *intersect;
     uint8_t data = 0;
 
@@ -3079,128 +3023,115 @@ Piece *addStrongholdPiece(StrongholdEnv *env, int typ,
     switch (typ)
     {
     case SH_START:
-        piece.bb0 = (Pos3){x, 64, z};
-        piece.bb1 = (Pos3){x + 5 - 1, 64 + 11 - 1, z + 5 - 1};
+        piece.bb = bb3(x, 64, z, x + 5 - 1, 64 + 11 - 1, z + 5 - 1);
         break;
     case SH_CORRIDOR:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, -1, 0, 5, 5, 7, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -1, -1, 0, 5, 5, 7, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
         nextInt(5); // entrance type
         if (nextInt(2) == 0) data |= 0x01;
         if (nextInt(2) == 0) data |= 0x02;
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_PRISON_HALL:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, -1, 0, 9, 5, 11, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -1, -1, 0, 9, 5, 11, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
         nextInt(5); // entrance type
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_LEFT_TURN:
     case SH_RIGHT_TURN:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, -1, 0, 5, 5, 5, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -1, -1, 0, 5, 5, 5, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
         nextInt(5); // entrance type
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_ROOM_CROSSING:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -4, -1, 0, 11, 7, 11, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -4, -1, 0, 11, 7, 11, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
         nextInt(5); // entrance type
         data = (uint8_t) nextInt(5); // room type
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_STAIRS:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, -7, 0, 5, 11, 8, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -1, -7, 0, 5, 11, 8, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
         nextInt(5); // entrance type
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_SPIRAL_STAIRCASE:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, -7, 0, 5, 11, 5, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -1, -7, 0, 5, 11, 5, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
         nextInt(5); // entrance type
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_FIVE_WAY_CROSSING:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -4, -3, 0, 10, 9, 11, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -4, -3, 0, 10, 9, 11, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
         nextInt(5); // entrance type
         if (nextBoolean()) data |= 0x01;
         if (nextBoolean()) data |= 0x02;
         if (nextBoolean()) data |= 0x04;
         if (nextInt(3) > 0) data |= 0x08;
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_CHEST_CORRIDOR:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, -1, 0, 5, 5, 7, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -1, -1, 0, 5, 5, 7, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
         nextInt(5); // entrance type
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_LIBRARY:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -4, -1, 0, 14, 11, 15, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -4, -1, 0, 14, 11, 15, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
         {
-            strongholdRotatedBox(&bb0, &bb1, x, y, z, -4, -1, 0, 14, 6, 15, facing);
-            if (!strongholdIsHighEnough(bb0) ||
-                getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+            bb = orientedBB3(x, y, z, -4, -1, 0, 14, 6, 15, facing);
+            if (!strongholdIsHighEnough(bb.minY) ||
+                getNextIntersectingPiece(env->list, env->count, &bb))
                 return NULL;
         }
         nextInt(5); // entrance type
-        if (bb1.y - bb0.y + 1 > 6)
+        if (bb.maxY - bb.minY + 1 > 6)
             data = 1;
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_PORTAL_ROOM:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -4, -1, 0, 11, 8, 16, facing);
-        if (!strongholdIsHighEnough(bb0) ||
-            getNextIntersectingPiece(env->list, env->count, bb0, bb1))
+        bb = orientedBB3(x, y, z, -4, -1, 0, 11, 8, 16, facing);
+        if (!strongholdIsHighEnough(bb.minY) ||
+            getNextIntersectingPiece(env->list, env->count, &bb))
             return NULL;
-        piece.bb0 = bb0;
-        piece.bb1 = bb1;
+        piece.bb = bb;
         break;
     case SH_SMALL_CORRIDOR:
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, -1, 0, 5, 5, 4, facing);
-        intersect = getNextIntersectingPiece(env->list, env->count, bb0, bb1);
-        if (intersect != NULL && intersect->bb0.y == bb0.y)
+        bb = orientedBB3(x, y, z, -1, -1, 0, 5, 5, 4, facing);
+        intersect = getNextIntersectingPiece(env->list, env->count, &bb);
+        if (intersect != NULL && intersect->bb.minY == bb.minY)
         {
             int len;
             for (len = 3; len >= 1; len--)
             {
-                Pos3 test0, test1;
-                strongholdRotatedBox(&test0, &test1, x, y, z, -1, -1, 0, 5, 5, len - 1, facing);
-                if (!boxesIntersect(intersect->bb0, intersect->bb1, test0, test1))
+                BB test = orientedBB3(x, y, z, -1, -1, 0, 5, 5, len - 1, facing);
+                if (!intersects(&intersect->bb, &test))
                 {
-                    strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, -1, 0, 5, 5, len, facing);
-                    piece.bb0 = bb0;
-                    piece.bb1 = bb1;
+                    bb = orientedBB3(x, y, z, -1, -1, 0, 5, 5, len, facing);
+                    piece.bb = bb;
                     goto L_accept_piece;
                 }
             }
@@ -3281,7 +3212,7 @@ Piece *extendStronghold(StrongholdEnv *env,
 
     if (parentDepth > 50)
         return NULL;
-    if (IABS(x - env->list[0].bb0.x) > 112 || IABS(z - env->list[0].bb0.z) > 112)
+    if (IABS(x - env->list[0].bb.minX) > 112 || IABS(z - env->list[0].bb.minZ) > 112)
         return NULL;
 
     mt_get_state(&saved);
@@ -3299,10 +3230,10 @@ Piece *extendStrongholdForward(
 {
     switch (p->rot)
     {
-    case 0: return extendStronghold(env, p->bb0.x + a, p->bb0.y + b, p->bb0.z - 1, 0, p->depth);
-    case 2: return extendStronghold(env, p->bb0.x + a, p->bb0.y + b, p->bb1.z + 1, 2, p->depth);
-    case 3: return extendStronghold(env, p->bb0.x - 1, p->bb0.y + b, p->bb0.z + a, 3, p->depth);
-    case 1: return extendStronghold(env, p->bb1.x + 1, p->bb0.y + b, p->bb0.z + a, 1, p->depth);
+    case 0: return extendStronghold(env, p->bb.minX + a, p->bb.minY + b, p->bb.minZ - 1, 0, p->depth);
+    case 2: return extendStronghold(env, p->bb.minX + a, p->bb.minY + b, p->bb.maxZ + 1, 2, p->depth);
+    case 3: return extendStronghold(env, p->bb.minX - 1, p->bb.minY + b, p->bb.minZ + a, 3, p->depth);
+    case 1: return extendStronghold(env, p->bb.maxX + 1, p->bb.minY + b, p->bb.minZ + a, 1, p->depth);
     default:
         UNREACHABLE();
     }
@@ -3314,10 +3245,10 @@ Piece *extendStrongholdLeft(
 {
     switch (p->rot)
     {
-    case 0: return extendStronghold(env, p->bb0.x - 1, p->bb0.y + a, p->bb0.z + b, 3, p->depth);
-    case 2: return extendStronghold(env, p->bb0.x - 1, p->bb0.y + a, p->bb0.z + b, 3, p->depth);
-    case 3: return extendStronghold(env, p->bb0.x + b, p->bb0.y + a, p->bb0.z - 1, 0, p->depth);
-    case 1: return extendStronghold(env, p->bb0.x + b, p->bb0.y + a, p->bb0.z - 1, 0, p->depth);
+    case 0: return extendStronghold(env, p->bb.minX - 1, p->bb.minY + a, p->bb.minZ + b, 3, p->depth);
+    case 2: return extendStronghold(env, p->bb.minX - 1, p->bb.minY + a, p->bb.minZ + b, 3, p->depth);
+    case 3: return extendStronghold(env, p->bb.minX + b, p->bb.minY + a, p->bb.minZ - 1, 0, p->depth);
+    case 1: return extendStronghold(env, p->bb.minX + b, p->bb.minY + a, p->bb.minZ - 1, 0, p->depth);
     default:
         UNREACHABLE();
     }
@@ -3329,10 +3260,10 @@ Piece *extendStrongholdRight(
 {
     switch (p->rot)
     {
-    case 0: return extendStronghold(env, p->bb1.x + 1, p->bb0.y + a, p->bb0.z + b, 1, p->depth);
-    case 2: return extendStronghold(env, p->bb1.x + 1, p->bb0.y + a, p->bb0.z + b, 1, p->depth);
-    case 3: return extendStronghold(env, p->bb0.x + b, p->bb0.y + a, p->bb1.z + 1, 2, p->depth);
-    case 1: return extendStronghold(env, p->bb0.x + b, p->bb0.y + a, p->bb1.z + 1, 2, p->depth);
+    case 0: return extendStronghold(env, p->bb.maxX + 1, p->bb.minY + a, p->bb.minZ + b, 1, p->depth);
+    case 2: return extendStronghold(env, p->bb.maxX + 1, p->bb.minY + a, p->bb.minZ + b, 1, p->depth);
+    case 3: return extendStronghold(env, p->bb.minX + b, p->bb.minY + a, p->bb.maxZ + 1, 2, p->depth);
+    case 1: return extendStronghold(env, p->bb.minX + b, p->bb.minY + a, p->bb.maxZ + 1, 2, p->depth);
     default:
         UNREACHABLE();
     }
@@ -3443,10 +3374,10 @@ static
 int strongholdPieceRngCountInChunk(const Piece *p, uint8_t data,
         int chunkX, int chunkZ)
 {
-    int minChunkX = floordiv(p->bb0.x, 16);
-    int maxChunkX = floordiv(p->bb1.x, 16);
-    int minChunkZ = floordiv(p->bb0.z, 16);
-    int maxChunkZ = floordiv(p->bb1.z, 16);
+    int minChunkX = floordiv(p->bb.minX, 16);
+    int maxChunkX = floordiv(p->bb.maxX, 16);
+    int minChunkZ = floordiv(p->bb.minZ, 16);
+    int maxChunkZ = floordiv(p->bb.maxZ, 16);
     Pos3 chests[2];
     int i, count;
 
@@ -3554,18 +3485,29 @@ void setPortalFrameEyes(StrongholdEnv *env, const Piece *portal)
 }
 
 static
-int getStrongholdPiecesInternal(Piece *list, int n, int mc,
+int getStrongholdPiecesInternal(Piece *list, uint8_t *data, int n, int mc,
         uint64_t seed, int chunkX, int chunkZ, uint8_t *portalEyes)
 {
     StrongholdEnv env;
     Piece *p, *prev;
     int i;
+    int freeData;
 
     if (n <= 0)
         return 0;
 
     memset(&env, 0, sizeof(env));
-    env.data = (uint8_t *) calloc((size_t) n, sizeof(*env.data));
+    if (data != NULL)
+    {
+        env.data = data;
+        memset(env.data, 0, (size_t) n*sizeof(*env.data));
+        freeData = 0;
+    }
+    else
+    {
+        env.data = (uint8_t *) calloc((size_t) n, sizeof(*env.data));
+        freeData = 1;
+    }
     if (env.data == NULL)
         return 0;
     env.list = list;
@@ -3582,8 +3524,7 @@ int getStrongholdPiecesInternal(Piece *list, int n, int mc,
     p = list;
     p->name = stronghold_info[SH_START].name;
     p->pos = (Pos3){(chunkX << 4) + 2, 64, (chunkZ << 4) + 2};
-    p->bb0 = (Pos3){p->pos.x, 64, p->pos.z};
-    p->bb1 = (Pos3){p->pos.x + 5 - 1, 64 + 11 - 1, p->pos.z + 5 - 1};
+    p->bb = bb3(p->pos.x, 64, p->pos.z, p->pos.x + 5 - 1, 64 + 11 - 1, p->pos.z + 5 - 1);
     p->rot = (nextInt(4) + 2) % 4; // bedrock use opposite
     p->depth = 0;
     p->type = SH_START;
@@ -3616,43 +3557,54 @@ int getStrongholdPiecesInternal(Piece *list, int n, int mc,
 
     for (i = 0; i < env.count; i++)
         list[i].next = NULL;
-    free(env.data);
+    if (freeData)
+        free(env.data);
     return env.count;
 }
 
 int getStrongholdPieces(Piece *list, int n, int mc, uint64_t seed, int chunkX, int chunkZ)
 {
-    return getStrongholdPiecesInternal(list, n, mc, seed, chunkX, chunkZ, NULL);
+    return getStrongholdPiecesInternal(list, NULL, n, mc, seed, chunkX, chunkZ, NULL);
 }
 
-int getStrongholdPortalFrames(StrongholdPortalFrame *frames,
-        const Piece *list, int count, uint64_t seed)
+int getStrongholdLayout(StrongholdLayout *sh, int mc, uint64_t seed, int chunkX, int chunkZ)
 {
-    Piece tmp[SH_PIECES_MAX];
-    uint8_t portalEyes[12] = {0};
-    int i;
-    const Piece *portal = NULL;
-    int startChunkX, startChunkZ;
+    sh->seed = seed;
+    sh->count = getStrongholdPiecesInternal(sh->pieces, sh->data, SH_PIECES_MAX,
+            mc, seed, chunkX, chunkZ, NULL);
+    return sh->count;
+}
 
-    for (i = 0; i < count; i++)
+int getStrongholdPortalFrames(StrongholdPortalFrame *frames, const StrongholdLayout *sh)
+{
+    StrongholdEnv env;
+    uint8_t eyes[12] = {0};
+    const Piece *portal = NULL;
+    int i;
+
+    for (i = 0; i < sh->count; i++)
     {
-        if (list[i].type == SH_PORTAL_ROOM)
+        if (sh->pieces[i].type == SH_PORTAL_ROOM)
         {
-            portal = list + i;
+            portal = sh->pieces + i;
             break;
         }
     }
     if (portal == NULL)
         return 0;
 
-    startChunkX = floordiv(list[0].pos.x - 2, 16);
-    startChunkZ = floordiv(list[0].pos.z - 2, 16);
-    getStrongholdPiecesInternal(tmp, SH_PIECES_MAX, MC_NEWEST, seed, startChunkX, startChunkZ, portalEyes);
+    memset(&env, 0, sizeof(env));
+    env.list = (Piece *) sh->pieces;
+    env.data = (uint8_t *) sh->data;
+    env.count = sh->count;
+    env.seed = sh->seed;
+    env.eyes = eyes;
+    setPortalFrameEyes(&env, portal);
     setPortalFramePos(frames, portal);
     for (i = 0; i < 12; i++)
     {
         frames[i].frameId = i;
-        frames[i].hasEye = portalEyes[i];
+        frames[i].hasEye = eyes[i];
     }
     return 12;
 }
@@ -3712,8 +3664,7 @@ Piece *addFortressPiece(PieceEnv *env, int typ, int x, int y, int z, int depth, 
     Piece *p = env->list + *env->n;
     p->name = fortress_info[typ].name;
     p->pos = pos;
-    p->bb0 = b0;
-    p->bb1 = b1;
+    p->bb = bb3(b0.x, b0.y, b0.z, b1.x, b1.y, b1.z);
     p->rot = facing;
     p->depth = depth;
     p->type = typ;
@@ -3723,9 +3674,7 @@ Piece *addFortressPiece(PieceEnv *env, int typ, int x, int y, int z, int depth, 
     for (i = 0; i < n; i++)
     {
         Piece *q = env->list + i;
-        if (q->bb1.x >= p->bb0.x && q->bb0.x <= p->bb1.x &&
-            q->bb1.z >= p->bb0.z && q->bb0.z <= p->bb1.z &&
-            q->bb1.y >= p->bb0.y && q->bb0.y <= p->bb1.y)
+        if (intersects(&q->bb, &p->bb))
         {
             return NULL; // collision
         }
@@ -3763,25 +3712,25 @@ void extendFortress(PieceEnv *env, Piece *p, int offh, int offv, int turn, int c
     int valid = -1;
     int weight_tot = 0;
 
-    y = p->bb0.y + offv;
+    y = p->bb.minY + offv;
 
     if (turn == 0) { // forward
         switch (facing) {
-        case 0: x = p->bb0.x+offh; z = p->bb0.z-1;    break;
-        case 1: x = p->bb1.x+1;    z = p->bb0.z+offh; break;
-        case 2: x = p->bb0.x+offh; z = p->bb1.z+1;    break;
-        case 3: x = p->bb0.x-1;    z = p->bb0.z+offh; break;
+        case 0: x = p->bb.minX+offh; z = p->bb.minZ-1;    break;
+        case 1: x = p->bb.maxX+1;    z = p->bb.minZ+offh; break;
+        case 2: x = p->bb.minX+offh; z = p->bb.maxZ+1;    break;
+        case 3: x = p->bb.minX-1;    z = p->bb.minZ+offh; break;
         default: UNREACHABLE();
         }
     } else if (turn == -1) { // left
-        if (facing & 1) { x = p->bb0.x+offh; z = p->bb0.z-1;    facing = 0; }
-        else            { x = p->bb0.x-1;    z = p->bb0.z+offh; facing = 3; }
+        if (facing & 1) { x = p->bb.minX+offh; z = p->bb.minZ-1;    facing = 0; }
+        else            { x = p->bb.minX-1;    z = p->bb.minZ+offh; facing = 3; }
     } else if (turn == +1) { // right
-        if (facing & 1) { x = p->bb0.x+offh, z = p->bb1.z+1;    facing = 2; }
-        else            { x = p->bb1.x+1;    z = p->bb0.z+offh; facing = 1; }
+        if (facing & 1) { x = p->bb.minX+offh, z = p->bb.maxZ+1;    facing = 2; }
+        else            { x = p->bb.maxX+1;    z = p->bb.minZ+offh; facing = 1; }
     } else UNREACHABLE();
 
-    if (IABS(x - env->list->bb0.x) > 112 || IABS(z - env->list->bb0.z) > 112)
+    if (IABS(x - env->list->bb.minX) > 112 || IABS(z - env->list->bb.minZ) > 112)
         goto L_end;
 
     for (valid = 0, t = typ0; t < typ1; t++)
@@ -3888,10 +3837,11 @@ int getFortressPieces(Piece *list, int n, int mc, uint64_t seed, int chunkX, int
     Piece *p = list;
     Pos3 pos = {chunkX * 16 + 2, 64, chunkZ * 16 + 2};
     p->name = fortress_info[0].name;
-    p->bb0 = p->bb1 = p->pos = pos;
-    p->bb1.x += fortress_info[0].size.x;
-    p->bb1.y += fortress_info[0].size.y;
-    p->bb1.z += fortress_info[0].size.z;
+    p->pos = pos;
+    p->bb = bb3(pos.x, pos.y, pos.z,
+            pos.x + fortress_info[0].size.x,
+            pos.y + fortress_info[0].size.y,
+            pos.z + fortress_info[0].size.z);
     p->rot = (nextInt(4) + 2) % 4; // 0->2 1->3 2->0 3->1
     p->depth = 0;
     p->type = 0;
@@ -3921,24 +3871,24 @@ int getFortressSpawnerPos(const Piece *piece, Pos3 *spawner)
     if (piece == NULL || spawner == NULL || piece->type != BRIDGE_SPAWNER)
         return 0;
 
-    spawner->y = piece->bb0.y + 5;
+    spawner->y = piece->bb.minY + 5;
     switch (piece->rot & 3)
     {
     case 0: // north
-        spawner->x = piece->bb0.x + 3;
-        spawner->z = piece->bb1.z - 5;
+        spawner->x = piece->bb.minX + 3;
+        spawner->z = piece->bb.maxZ - 5;
         return 1;
     case 1: // east
-        spawner->x = piece->bb0.x + 5;
-        spawner->z = piece->bb0.z + 3;
+        spawner->x = piece->bb.minX + 5;
+        spawner->z = piece->bb.minZ + 3;
         return 1;
     case 2: // south
-        spawner->x = piece->bb0.x + 3;
-        spawner->z = piece->bb0.z + 5;
+        spawner->x = piece->bb.minX + 3;
+        spawner->z = piece->bb.minZ + 5;
         return 1;
     case 3: // west
-        spawner->x = piece->bb1.x - 5;
-        spawner->z = piece->bb0.z + 3;
+        spawner->x = piece->bb.maxX - 5;
+        spawner->z = piece->bb.minZ + 3;
         return 1;
     default:
         return 0;
@@ -3967,21 +3917,20 @@ const char *mineshaft_piece_names[] = {
 
 static
 Piece *addMineshaftPiece(MineshaftEnv *env, int typ,
-        int x, int y, int z, int facing, int depth, Pos3 bb0, Pos3 bb1)
+        int x, int y, int z, int facing, int depth, BB bb)
 {
     Piece *p;
 
     if (env->count >= env->nmax)
         return NULL;
-    if (getNextIntersectingPiece(env->list, env->count, bb0, bb1) != NULL)
+    if (getNextIntersectingPiece(env->list, env->count, &bb) != NULL)
         return NULL;
 
     p = env->list + env->count++;
     memset(p, 0, sizeof(*p));
     p->name = mineshaft_piece_names[typ];
     p->pos = (Pos3){x, y, z};
-    p->bb0 = bb0;
-    p->bb1 = bb1;
+    p->bb = bb;
     p->rot = facing;
     p->depth = depth;
     p->type = typ;
@@ -3991,13 +3940,11 @@ Piece *addMineshaftPiece(MineshaftEnv *env, int typ,
 static
 Piece *addMineshaftRoom(MineshaftEnv *env, int x, int y, int z)
 {
-    Pos3 bb0 = {x, y, z};
-    Pos3 bb1;
     // z->y->x in bedrock
-    bb1.z = z + nextInt(6) + 7;
-    bb1.y = y + nextInt(6) + 4;
-    bb1.x = x + nextInt(6) + 7;
-    return addMineshaftPiece(env, MSHFT_ROOM, x, y, z, 0, 0, bb0, bb1);
+    int maxZ = z + nextInt(6) + 7;
+    int maxY = y + nextInt(6) + 4;
+    int maxX = x + nextInt(6) + 7;
+    return addMineshaftPiece(env, MSHFT_ROOM, x, y, z, 0, 0, bb3(x, y, z, maxX, maxY, maxZ));
 }
 
 static
@@ -4007,12 +3954,11 @@ Piece *findMineshaftCorridor(MineshaftEnv *env,
     int attempts = nextInt(3) + 2;
     for (; attempts > 0; attempts--)
     {
-        Pos3 bb0, bb1;
-        strongholdRotatedBox(&bb0, &bb1, x, y, z, 0, 0, 0, 3, 3, attempts * 5, facing);
-        if (getNextIntersectingPiece(env->list, env->count, bb0, bb1) == NULL)
+        BB bb = orientedBB3(x, y, z, 0, 0, 0, 3, 3, attempts * 5, facing);
+        if (getNextIntersectingPiece(env->list, env->count, &bb) == NULL)
         {
             Piece *p = addMineshaftPiece(env, MSHFT_CORRIDOR,
-                x, y, z, facing, depth, bb0, bb1);
+                x, y, z, facing, depth, bb);
             if (p == NULL)
                 return NULL;
             int hasRails = nextInt(3) == 0;
@@ -4029,20 +3975,18 @@ Piece *findMineshaftCrossing(MineshaftEnv *env,
         int x, int y, int z, int facing, int depth)
 {
     int sizeY = 2;
-    Pos3 bb0, bb1;
     if (nextInt(4) == 0)
         sizeY += 4;
-    strongholdRotatedBox(&bb0, &bb1, x, y, z, -1, 0, 0, 5, sizeY + 1, 5, facing);
-    return addMineshaftPiece(env, MSHFT_CROSSING, x, y, z, facing, depth, bb0, bb1);
+    BB bb = orientedBB3(x, y, z, -1, 0, 0, 5, sizeY + 1, 5, facing);
+    return addMineshaftPiece(env, MSHFT_CROSSING, x, y, z, facing, depth, bb);
 }
 
 static
 Piece *findMineshaftStairs(MineshaftEnv *env,
         int x, int y, int z, int facing, int depth)
 {
-    Pos3 bb0, bb1;
-    strongholdRotatedBox(&bb0, &bb1, x, y, z, 0, -5, 0, 3, 8, 9, facing);
-    return addMineshaftPiece(env, MSHFT_STAIRS, x, y, z, facing, depth, bb0, bb1);
+    BB bb = orientedBB3(x, y, z, 0, -5, 0, 3, 8, 9, facing);
+    return addMineshaftPiece(env, MSHFT_STAIRS, x, y, z, facing, depth, bb);
 }
 
 static Piece *generateAndAddMineshaftPiece(MineshaftEnv *env,
@@ -4057,19 +4001,19 @@ void addMineshaftRoomChildren(MineshaftEnv *env, const Piece *p)
     if (nextFloat() > prob) // 50% spawn rate in mesa biomes
         return;
 
-    k = p->bb1.y - p->bb0.y - 3;
+    k = p->bb.maxY - p->bb.minY - 3;
     if (k < 1)
         k = 1;
 
-    axisLen = p->bb1.x - p->bb0.x + 1;
+    axisLen = p->bb.maxX - p->bb.minX + 1;
     for (j = 0; j < axisLen; )
     {
         j += nextInt(axisLen);
         if (j + 3 > axisLen)
             break;
-        x = p->bb0.x + j;
-        y = p->bb0.y + nextInt(k) + 1;
-        z = p->bb0.z - 1;
+        x = p->bb.minX + j;
+        y = p->bb.minY + nextInt(k) + 1;
+        z = p->bb.minZ - 1;
         generateAndAddMineshaftPiece(env, x, y, z, 0, p->depth);
         j += 4;
     }
@@ -4078,22 +4022,22 @@ void addMineshaftRoomChildren(MineshaftEnv *env, const Piece *p)
         j += nextInt(axisLen);
         if (j + 3 > axisLen)
             break;
-        x = p->bb0.x + j;
-        y = p->bb0.y + nextInt(k) + 1;
-        z = p->bb1.z + 1;
+        x = p->bb.minX + j;
+        y = p->bb.minY + nextInt(k) + 1;
+        z = p->bb.maxZ + 1;
         generateAndAddMineshaftPiece(env, x, y, z, 2, p->depth);
         j += 4;
     }
 
-    axisLen = p->bb1.z - p->bb0.z + 1;
+    axisLen = p->bb.maxZ - p->bb.minZ + 1;
     for (j = 0; j < axisLen; )
     {
         j += nextInt(axisLen);
         if (j + 3 > axisLen)
             break;
-        x = p->bb0.x - 1;
-        y = p->bb0.y + nextInt(k) + 1;
-        z = p->bb0.z + j;
+        x = p->bb.minX - 1;
+        y = p->bb.minY + nextInt(k) + 1;
+        z = p->bb.minZ + j;
         generateAndAddMineshaftPiece(env, x, y, z, 3, p->depth);
         j += 4;
     }
@@ -4102,9 +4046,9 @@ void addMineshaftRoomChildren(MineshaftEnv *env, const Piece *p)
         j += nextInt(axisLen);
         if (j + 3 > axisLen)
             break;
-        x = p->bb1.x + 1;
-        y = p->bb0.y + nextInt(k) + 1;
-        z = p->bb0.z + j;
+        x = p->bb.maxX + 1;
+        y = p->bb.minY + nextInt(k) + 1;
+        z = p->bb.minZ + j;
         generateAndAddMineshaftPiece(env, x, y, z, 1, p->depth);
         j += 4;
     }
@@ -4115,8 +4059,8 @@ void addMineshaftCorridorChildren(MineshaftEnv *env, const Piece *p)
 {
     int branchType = nextInt(4);
     int yOffset = nextInt(3);
-    int minX = p->bb0.x, minY = p->bb0.y, minZ = p->bb0.z;
-    int maxX = p->bb1.x, maxY = p->bb1.y, maxZ = p->bb1.z;
+    int minX = p->bb.minX, minY = p->bb.minY, minZ = p->bb.minZ;
+    int maxX = p->bb.maxX, maxY = p->bb.maxY, maxZ = p->bb.maxZ;
     int x, z, branch;
     (void) maxY;
 
@@ -4183,9 +4127,9 @@ void addMineshaftCorridorChildren(MineshaftEnv *env, const Piece *p)
 static
 void addMineshaftCrossingChildren(MineshaftEnv *env, const Piece *p)
 {
-    int minX = p->bb0.x, minY = p->bb0.y, minZ = p->bb0.z;
-    int maxX = p->bb1.x, maxZ = p->bb1.z;
-    int twoFloored = (p->bb1.y - p->bb0.y + 1) > 3;
+    int minX = p->bb.minX, minY = p->bb.minY, minZ = p->bb.minZ;
+    int maxX = p->bb.maxX, maxZ = p->bb.maxZ;
+    int twoFloored = (p->bb.maxY - p->bb.minY + 1) > 3;
 
     switch (p->rot)
     {
@@ -4227,10 +4171,10 @@ void addMineshaftStairsChildren(MineshaftEnv *env, const Piece *p)
 {
     switch (p->rot)
     {
-    case 0: generateAndAddMineshaftPiece(env, p->bb0.x, p->bb0.y, p->bb0.z - 1, 0, p->depth); break;
-    case 2: generateAndAddMineshaftPiece(env, p->bb0.x, p->bb0.y, p->bb1.z + 1, 2, p->depth); break;
-    case 3: generateAndAddMineshaftPiece(env, p->bb0.x - 1, p->bb0.y, p->bb0.z, 3, p->depth); break;
-    case 1: generateAndAddMineshaftPiece(env, p->bb1.x + 1, p->bb0.y, p->bb0.z, 1, p->depth); break;
+    case 0: generateAndAddMineshaftPiece(env, p->bb.minX, p->bb.minY, p->bb.minZ - 1, 0, p->depth); break;
+    case 2: generateAndAddMineshaftPiece(env, p->bb.minX, p->bb.minY, p->bb.maxZ + 1, 2, p->depth); break;
+    case 3: generateAndAddMineshaftPiece(env, p->bb.minX - 1, p->bb.minY, p->bb.minZ, 3, p->depth); break;
+    case 1: generateAndAddMineshaftPiece(env, p->bb.maxX + 1, p->bb.minY, p->bb.minZ, 1, p->depth); break;
     default: UNREACHABLE();
     }
 }
@@ -4277,7 +4221,7 @@ Piece *generateAndAddMineshaftPiece(MineshaftEnv *env,
         return NULL;
     if (env->count >= env->nmax)
         return NULL;
-    if (IABS(x - env->list[0].bb0.x) > 80 || IABS(z - env->list[0].bb0.z) > 80)
+    if (IABS(x - env->list[0].bb.minX) > 80 || IABS(z - env->list[0].bb.minZ) > 80)
         return NULL;
 
     p = createRandomMineshaftPiece(env, x, y, z, facing, genDepth + 1);
@@ -4319,12 +4263,12 @@ int getMineshaftPieces(Piece *list, int n, int mc, uint64_t seed, int chunkX, in
 
     addMineshaftChildren(&env, start);
 
-    boxMinY = list[0].bb0.y;
-    boxMaxY = list[0].bb1.y;
+    boxMinY = list[0].bb.minY;
+    boxMaxY = list[0].bb.maxY;
     for (i = 1; i < env.count; i++)
     {
-        if (list[i].bb0.y < boxMinY) boxMinY = list[i].bb0.y;
-        if (list[i].bb1.y > boxMaxY) boxMaxY = list[i].bb1.y;
+        if (list[i].bb.minY < boxMinY) boxMinY = list[i].bb.minY;
+        if (list[i].bb.maxY > boxMaxY) boxMaxY = list[i].bb.maxY;
     }
     boxHeight = boxMaxY - boxMinY + 1;
 
@@ -4353,11 +4297,6 @@ int getMineshaftPieces(Piece *list, int n, int mc, uint64_t seed, int chunkX, in
 // Dungeon Generator
 //==============================================================================
 
-typedef struct {
-    int64_t key;
-    int8_t val;
-    uint8_t used;
-} DungeonWSCell;
 enum {
     AIR               = 0,
     SOLID             = 1,
@@ -4367,64 +4306,15 @@ enum {
     SPAWNER           = SOLID,
 };
 
-static uint64_t dungeonWsHash(int64_t key)
-{
-    uint64_t h = (uint64_t) key;
-    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL;
-    h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ULL;
-    h ^= h >> 33;
-    return h;
-}
-
-static int64_t dungeonWsKey(int x, int y, int z, int originX, int originZ)
-{
-    return ((int64_t)(uint16_t)(x - originX) << 32)
-         | ((int64_t)(uint16_t)(z - originZ) << 16)
-         | (uint16_t)(y);
-}
-
-static void dungeonWsSet(DungeonWSCell *tab, int cap, int64_t key, int val)
-{
-    uint64_t h = dungeonWsHash(key) & (uint32_t)(cap - 1);
-    for (int i = 0; i < cap; i++)
-    {
-        int idx = (int)((h + (unsigned)i) & (uint32_t)(cap - 1));
-        if (!tab[idx].used || tab[idx].key == key)
-        {
-            tab[idx].used = 1;
-            tab[idx].key = key;
-            tab[idx].val = (int8_t) val;
-            return;
-        }
-    }
-}
-
-static int dungeonWsFind(const DungeonWSCell *tab, int cap, int64_t key, int *val)
-{
-    uint64_t h = dungeonWsHash(key) & (uint32_t)(cap - 1);
-    for (int i = 0; i < cap; i++)
-    {
-        int idx = (int)((h + (unsigned)i) & (uint32_t)(cap - 1));
-        if (!tab[idx].used)
-            return 0;
-        if (tab[idx].key == key)
-        {
-            *val = tab[idx].val;
-            return 1;
-        }
-    }
-    return 0;
-}
-
 static int dungeonCachedSolid(const BiomeNoise *bn, const TerrainNoise *tn,
         const TerrainShaper *ts, const CaveNoise *cn,
         TerrainCache *tc,
-        DungeonWSCell *ws, int wscap, int originX, int originZ,
+        SparseCell *ws, int wscap, int originX, int originZ,
         int x, int y, int z)
 {
-    int64_t key = dungeonWsKey(x, y, z, originX, originZ);
+    int64_t key = packPosKey(x, y, z, originX, originZ);
     int val;
-    if (dungeonWsFind(ws, wscap, key, &val))
+    if (sparseFind(ws, wscap, key, &val))
         return val == SOLID;
 
     int solid;
@@ -4434,13 +4324,13 @@ static int dungeonCachedSolid(const BiomeNoise *bn, const TerrainNoise *tn,
         solid = isSolidCached(bn, tn, ts, cn, tc, x, y, z);
 
     val = solid ? SOLID : AIR;
-    dungeonWsSet(ws, wscap, key, val);
+    sparseSet(ws, wscap, key, val);
     return val == SOLID;
 }
 
 static int dungeonPlace(const BiomeNoise *bn, const TerrainNoise *tn,
         const TerrainShaper *ts, const CaveNoise *cn, TerrainCache *tc,
-        DungeonWSCell *ws, int wscap, int originX, int originZ,
+        SparseCell *ws, int wscap, int originX, int originZ,
         int ox, int oy, int oz, DungeonData *out, int *n, int nout)
 {
     int xr = nextInt(2) + 2;
@@ -4492,24 +4382,24 @@ static int dungeonPlace(const BiomeNoise *bn, const TerrainNoise *tn,
     for (int dz = minZ; dz <= maxZ; dz++)
     {
         int wx = ox+dx, wy = oy+dy, wz = oz+dz;
-        int64_t key = dungeonWsKey(wx, wy, wz, originX, originZ);
+        int64_t key = packPosKey(wx, wy, wz, originX, originZ);
 
         if (dx == minX || dy == minY || dz == minZ ||
             dx == maxX || dy == maxY || dz == maxZ)
         {
             if (!dungeonCachedSolid(bn,tn,ts,cn,tc, ws, wscap, originX, originZ, wx, wy-1, wz))
-                dungeonWsSet(ws, wscap, key, AIR);
+                sparseSet(ws, wscap, key, AIR);
             else
             {
                 if (dy == -1 && nextInt(4) != 0) 
-                    dungeonWsSet(ws, wscap, key, MOSSY_COBBLESTONE);
+                    sparseSet(ws, wscap, key, MOSSY_COBBLESTONE);
                 else 
-                    dungeonWsSet(ws, wscap, key, COBBLESTONE);
+                    sparseSet(ws, wscap, key, COBBLESTONE);
             }
         }
         else
         {
-            dungeonWsSet(ws, wscap, key, AIR);
+            sparseSet(ws, wscap, key, AIR);
         }
     }
 
@@ -4523,10 +4413,10 @@ static int dungeonPlace(const BiomeNoise *bn, const TerrainNoise *tn,
         int zc = oz + nextInt(zsize) - zr;
         int yc = oy;
         int xc = ox + nextInt(xsize) - xr;
-        int64_t ckey = dungeonWsKey(xc, yc, zc, originX, originZ);
+        int64_t ckey = packPosKey(xc, yc, zc, originX, originZ);
 
         int val;
-        dungeonWsFind(ws, wscap, ckey, &val);
+        sparseFind(ws, wscap, ckey, &val);
         if (val == AIR)
         {
             static const int ddx[] = {-1, 1, 0, 0};
@@ -4535,8 +4425,8 @@ static int dungeonPlace(const BiomeNoise *bn, const TerrainNoise *tn,
             int ok = 1;
             for (int k = 0; k < 4; k++)
             {
-                int64_t nk = dungeonWsKey(xc+ddx[k], yc, zc+ddz[k], originX, originZ);
-                dungeonWsFind(ws, wscap, nk, &val);
+                int64_t nk = packPosKey(xc+ddx[k], yc, zc+ddz[k], originX, originZ);
+                sparseFind(ws, wscap, nk, &val);
                 if (val == SOLID)
                     wallCount++;
                 // early exit
@@ -4548,7 +4438,7 @@ static int dungeonPlace(const BiomeNoise *bn, const TerrainNoise *tn,
             if (ok && wallCount == 1)
             {
                 //printf("chest %d %d %d\n", xc, yc, zc);
-                dungeonWsSet(ws, wscap, ckey, CHEST);
+                sparseSet(ws, wscap, ckey, CHEST);
                 next(); // loot seed
                 out[*n].chests[i].x = xc;
                 out[*n].chests[i].y = yc;
@@ -4559,7 +4449,7 @@ static int dungeonPlace(const BiomeNoise *bn, const TerrainNoise *tn,
     }
 
     // place spawner + pick mob type
-    dungeonWsSet(ws, wscap, dungeonWsKey(ox, oy, oz, originX, originZ), SPAWNER);
+    sparseSet(ws, wscap, packPosKey(ox, oy, oz, originX, originZ), SPAWNER);
     int type = DUNGEON_ZOMBIE; // default
     switch (nextInt(4))
     {
@@ -4599,8 +4489,8 @@ static int mineshaftNearby(int mc, uint64_t seed, int chunkX, int chunkZ)
             int n = getMineshaftPieces(pieces, sizeof(pieces)/sizeof(pieces[0]), mc, seed, cx, cz, MINESHAFT_NORMAL);
             for (int i = 0; i < n; i++)
             {
-                if (pieces[i].bb1.x >= x0 && pieces[i].bb0.x <= x1 &&
-                    pieces[i].bb1.z >= z0 && pieces[i].bb0.z <= z1)
+                if (pieces[i].bb.maxX >= x0 && pieces[i].bb.minX <= x1 &&
+                    pieces[i].bb.maxZ >= z0 && pieces[i].bb.minZ <= z1)
                     return 1;
             }
         }
@@ -4621,7 +4511,7 @@ int getDungeons(
         mc < MC_1_18) // not supported
         return 0;
 
-    DungeonWSCell *ws = (DungeonWSCell*) calloc(DUNGEON_CAP, sizeof(DungeonWSCell));
+    SparseCell *ws = (SparseCell*) calloc(DUNGEON_CAP, sizeof(SparseCell));
     if (!ws)
         return 0;
     TerrainCache *tc = (TerrainCache*) malloc(sizeof(TerrainCache));
@@ -4706,12 +4596,7 @@ int getOutpostPieces(Piece* pieces, uint64_t seed, int chunkX, int chunkZ)
 
     int size = 15;
     int ox, oz;
-    switch (rotation) {
-        case 0: ox =  size; oz =  size; break;
-        case 1: ox = -size; oz =  size; break;
-        case 2: ox = -size; oz = -size; break;
-        case 3: ox =  size; oz = -size; break;
-    }
+    rotatePos2D(rotation, 0, 0, size, size, &ox, &oz);
 
     int centerX = baseX + ox;
     int centerZ = baseZ + oz;
@@ -4740,39 +4625,35 @@ int getOutpostPieces(Piece* pieces, uint64_t seed, int chunkX, int chunkZ)
         p->pos.x = positions[i].x;
         p->pos.y = positions[i].y;
         p->pos.z = positions[i].z;
-        p->bb0.x = p->pos.x;
-        p->bb0.y = p->pos.y;
-        p->bb0.z = p->pos.z;
-        p->bb1.x = p->pos.x;
-        p->bb1.y = p->pos.y;
-        p->bb1.z = p->pos.z;
 
         int sizeX = outpost_info[type].size.x;
         int sizeY = outpost_info[type].size.y;
         int sizeZ = outpost_info[type].size.z;
 
+        Pos3 bb0 = p->pos, bb1 = p->pos;
         switch(rot) {
             case 0: // North
-                p->bb1.x += sizeX - 1;
-                p->bb1.y += sizeY - 1;
-                p->bb1.z += sizeZ - 1;
+                bb1.x += sizeX - 1;
+                bb1.y += sizeY - 1;
+                bb1.z += sizeZ - 1;
                 break;
             case 1: // East
-                p->bb0.x -= sizeZ + 1;
-                p->bb1.y += sizeY - 1;
-                p->bb1.z += sizeX - 1;
+                bb0.x -= sizeZ + 1;
+                bb1.y += sizeY - 1;
+                bb1.z += sizeX - 1;
                 break;
             case 2: // South
-                p->bb0.x -= sizeX + 1;
-                p->bb1.y += sizeY - 1;
-                p->bb0.z -= sizeZ + 1;
+                bb0.x -= sizeX + 1;
+                bb1.y += sizeY - 1;
+                bb0.z -= sizeZ + 1;
                 break;
             case 3: // West
-                p->bb1.x += sizeZ - 1;
-                p->bb1.y += sizeY - 1;
-                p->bb0.z -= sizeX + 1;
+                bb1.x += sizeZ - 1;
+                bb1.y += sizeY - 1;
+                bb0.z -= sizeX + 1;
                 break;
         }
+        p->bb = bb3(bb0.x, bb0.y, bb0.z, bb1.x, bb1.y, bb1.z);
         p->rot = (uint8_t)rot;
         p->type = (int8_t)type;
     
@@ -4803,53 +4684,11 @@ uint64_t getHouseList(int *out, uint64_t seed, int chunkX, int chunkZ)
     return 1;
 }
 
-#define PV_F_DOWN  0
-#define PV_F_UP    1
-#define PV_F_NORTH 2
-#define PV_F_SOUTH 3
-#define PV_F_WEST  4
-#define PV_F_EAST  5
-
-typedef struct { int minX, minY, minZ, maxX, maxY, maxZ; } PV_BB;
-
-static PV_BB pvbb_make(int x1,int y1,int z1,int x2,int y2,int z2)
-{ PV_BB b={x1,y1,z1,x2,y2,z2}; return b; }
-
-static PV_BB pvbb_empty(void)
-{ return pvbb_make(0x7fffffff,0x7fffffff,0x7fffffff,(int)0x80000000,(int)0x80000000,(int)0x80000000); }
-
-static int pvbb_intersects(const PV_BB *a, const PV_BB *b)
-{
-    return a->maxX >= b->minX && a->minX <= b->maxX &&
-           a->maxZ >= b->minZ && a->minZ <= b->maxZ &&
-           a->maxY >= b->minY && a->minY <= b->maxY;
-}
-static int pvbb_xsize(const PV_BB *b){ return b->maxX - b->minX + 1; }
-static int pvbb_zsize(const PV_BB *b){ return b->maxZ - b->minZ + 1; }
-
-static PV_BB pvbb_component(int sx,int sy,int sz,
-                             int xMin,int yMin,int zMin,
-                             int xMax,int yMax,int zMax,int facing)
-{
-    switch(facing){
-    case PV_F_NORTH:
-        return pvbb_make(sx+xMin, sy+yMin, sz-zMax+1+zMin, sx+xMax-1+xMin, sy+yMax-1+yMin, sz+zMin);
-    case PV_F_SOUTH:
-        return pvbb_make(sx+xMin, sy+yMin, sz+zMin, sx+xMax-1+xMin, sy+yMax-1+yMin, sz+zMax-1+zMin);
-    case PV_F_WEST:
-        return pvbb_make(sx-zMax+1+zMin, sy+yMin, sz+xMin, sx+zMin, sy+yMax-1+yMin, sz+xMax-1+xMin);
-    case PV_F_EAST:
-        return pvbb_make(sx+zMin, sy+yMin, sz+xMin, sx+zMax-1+zMin, sy+yMax-1+yMin, sz+xMax-1+xMin);
-    default:
-        return pvbb_make(sx+xMin, sy+yMin, sz+zMin, sx+xMax-1+xMin, sy+yMax-1+yMin, sz+zMax-1+zMin);
-    }
-}
-
 typedef struct {
     int vpType;
     int facing;
     int depth;
-    PV_BB bb;
+    BB bb;
     int length;
 } PV_Piece;
 
@@ -4923,14 +4762,14 @@ typedef struct {
     PV_PWList weights;
     int lastPlacedPWIdx;
     int terrainType;
-    PV_BB startBB;
+    BB startBB;
 } PV_VStart;
 
-static int pv_find_intersecting(const PV_PieceArr *pa, const PV_BB *bb)
+static int pv_find_intersecting(const PV_PieceArr *pa, const BB *bb)
 {
     for (int i=0; i<pa->n; i++)
     {
-        if (pvbb_intersects(&pa->arr[i].bb, bb))
+        if (intersects(&pa->arr[i].bb, bb))
         {
             return i;
         }
@@ -4938,12 +4777,12 @@ static int pv_find_intersecting(const PV_PieceArr *pa, const PV_BB *bb)
     return -1;
 }
 
-static int pv_path_find_box(PV_VStart *vs, int x,int y,int z,int facing, PV_BB *out)
+static int pv_path_find_box(PV_VStart *vs, int x,int y,int z,int facing, BB *out)
 {
     int initLen = 7 * nextIntRange(3,6);
     for (int i=initLen; i>=7; i-=7)
     {
-        PV_BB bb = pvbb_component(x,y,z, 0,0,0, 3,3,i, facing);
+        BB bb = orientedBB3(x,y,z, 0,0,0, 3,3,i, toRot(facing));
         if (pv_find_intersecting(vs->pieces, &bb) < 0)
         {
             *out=bb;
@@ -4953,9 +4792,9 @@ static int pv_path_find_box(PV_VStart *vs, int x,int y,int z,int facing, PV_BB *
     return 0;
 }
 
-static int pv_torch_find_box(PV_VStart *vs, int x,int y,int z,int facing, PV_BB *out)
+static int pv_torch_find_box(PV_VStart *vs, int x,int y,int z,int facing, BB *out)
 {
-    PV_BB bb = pvbb_component(x,y,z, 0,0,0, 3,4,2, facing);
+    BB bb = orientedBB3(x,y,z, 0,0,0, 3,4,2, toRot(facing));
     if (pv_find_intersecting(vs->pieces, &bb) < 0)
     {
         *out=bb;
@@ -4971,14 +4810,14 @@ static int pv_gen_add_road(PV_VStart *vs, int x,int y,int z,int facing,int depth
     int dz = z - vs->startBB.minZ; if(dz<0) dz=-dz;
     if (dx>112 || dz>112) return -1;
 
-    PV_BB bb;
+    BB bb;
     if (!pv_path_find_box(vs,x,y,z,facing,&bb)) return -1;
     if (bb.minY <= 10) return -1;
 
     PV_Piece p;
     p.vpType = VP_PATH; p.facing = facing; p.depth = depth; p.bb = bb;
-    int xs = pvbb_xsize(&bb);
-    int zs = pvbb_zsize(&bb);
+    int xs = xSize(&bb);
+    int zs = zSize(&bb);
     p.length = xs > zs ? xs : zs;
     int idx = vs->pieces->n;
     pv_pa_add(vs->pieces, &p);
@@ -4989,43 +4828,43 @@ static int pv_gen_add_road(PV_VStart *vs, int x,int y,int z,int facing,int depth
 static int pv_create_building(PV_VStart *vs, int vpType,
                                int x,int y,int z,int facing,int depth)
 {
-    PV_BB bb;
+    BB bb;
     switch(vpType)
     {
     case VP_HOUSE4G:
-        bb = pvbb_component(x,y,z, 0,0,0, 5,6,5, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 5,6,5, toRot(facing));
         if (pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         nextBoolean(); break;
     case VP_CHURCH:
-        bb = pvbb_component(x,y,z, 0,0,0, 5,12,9, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 5,12,9, toRot(facing));
         if (bb.minY<=10 || pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         break;
     case VP_HOUSE1:
-        bb = pvbb_component(x,y,z, 0,0,0, 9,9,6, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 9,9,6, toRot(facing));
         if (bb.minY<=10 || pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         break;
     case VP_WOODHUT:
-        bb = pvbb_component(x,y,z, 0,0,0, 4,6,5, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 4,6,5, toRot(facing));
         if (bb.minY<=10 || pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         nextBoolean(); nextInt(3); break;
     case VP_HALL:
-        bb = pvbb_component(x,y,z, 0,0,0, 9,7,11, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 9,7,11, toRot(facing));
         if (bb.minY<=10 || pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         break;
     case VP_FIELD1:
-        bb = pvbb_component(x,y,z, 0,0,0, 13,4,9, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 13,4,9, toRot(facing));
         if (bb.minY<=10 || pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         nextInt(10); nextInt(10); nextInt(10); nextInt(10); break;
     case VP_FIELD2:
-        bb = pvbb_component(x,y,z, 0,0,0, 7,4,9, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 7,4,9, toRot(facing));
         if (bb.minY<=10 || pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         nextInt(10); nextInt(10); break;
     case VP_HOUSE2:
-        bb = pvbb_component(x,y,z, 0,0,0, 10,6,7, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 10,6,7, toRot(facing));
         if (bb.minY<=10 || pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         break;
     case VP_HOUSE3:
-        bb = pvbb_component(x,y,z, 0,0,0, 9,7,12, facing);
+        bb = orientedBB3(x,y,z, 0,0,0, 9,7,12, toRot(facing));
         if (bb.minY<=10 || pv_find_intersecting(vs->pieces,&bb)>=0) return -1;
         break;
     default: return -1;
@@ -5074,7 +4913,7 @@ static int pv_gen_component(PV_VStart *vs, int x,int y,int z,int facing,int dept
             return idx;
         }
     }
-    PV_BB bb;
+    BB bb;
     if (pv_torch_find_box(vs,x,y,z,facing,&bb))
     {
         PV_Piece p; p.vpType=VP_TORCH; p.facing=facing; p.depth=depth; p.bb=bb; p.length=0;
@@ -5106,12 +4945,12 @@ static int pv_get_next_nn(PV_VStart *vs, int pi, int yOff, int zOff)
     const PV_Piece *p = &vs->pieces->arr[pi];
     switch (p->facing)
     {
-    case PV_F_NORTH:
-    case PV_F_SOUTH:
-        return pv_gen_add_component(vs, p->bb.minX-1, p->bb.minY+yOff, p->bb.minZ+zOff, PV_F_WEST, p->depth);
-    case PV_F_WEST:
-    case PV_F_EAST:
-        return pv_gen_add_component(vs, p->bb.minX+zOff, p->bb.minY+yOff, p->bb.minZ-1, PV_F_NORTH, p->depth);
+    case FACING_NORTH:
+    case FACING_SOUTH:
+        return pv_gen_add_component(vs, p->bb.minX-1, p->bb.minY+yOff, p->bb.minZ+zOff, FACING_WEST, p->depth);
+    case FACING_WEST:
+    case FACING_EAST:
+        return pv_gen_add_component(vs, p->bb.minX+zOff, p->bb.minY+yOff, p->bb.minZ-1, FACING_NORTH, p->depth);
     default: return -1;
     }
 }
@@ -5121,12 +4960,12 @@ static int pv_get_next_pp(PV_VStart *vs, int pi, int yOff, int zOff)
     const PV_Piece *p = &vs->pieces->arr[pi];
     switch (p->facing)
     {
-    case PV_F_NORTH:
-    case PV_F_SOUTH:
-        return pv_gen_add_component(vs, p->bb.maxX+1, p->bb.minY+yOff, p->bb.minZ+zOff, PV_F_EAST, p->depth);
-    case PV_F_WEST:
-    case PV_F_EAST:
-        return pv_gen_add_component(vs, p->bb.minX+zOff, p->bb.minY+yOff, p->bb.maxZ+1, PV_F_SOUTH, p->depth);
+    case FACING_NORTH:
+    case FACING_SOUTH:
+        return pv_gen_add_component(vs, p->bb.maxX+1, p->bb.minY+yOff, p->bb.minZ+zOff, FACING_EAST, p->depth);
+    case FACING_WEST:
+    case FACING_EAST:
+        return pv_gen_add_component(vs, p->bb.minX+zOff, p->bb.minY+yOff, p->bb.maxZ+1, FACING_SOUTH, p->depth);
     default: return -1;
     }
 }
@@ -5141,8 +4980,8 @@ static void pv_path_build(PV_VStart *vs, int pi)
         int idx = pv_get_next_nn(vs,pi,0,i);
         if (idx>=0)
         {
-            int xs=pvbb_xsize(&vs->pieces->arr[idx].bb);
-            int zs=pvbb_zsize(&vs->pieces->arr[idx].bb);
+            int xs=xSize(&vs->pieces->arr[idx].bb);
+            int zs=zSize(&vs->pieces->arr[idx].bb);
             i += (xs>zs?xs:zs); flag=1;
         }
     }
@@ -5151,64 +4990,64 @@ static void pv_path_build(PV_VStart *vs, int pi)
         int idx = pv_get_next_pp(vs,pi,0,j);
         if (idx>=0)
         {
-            int xs=pvbb_xsize(&vs->pieces->arr[idx].bb);
-            int zs=pvbb_zsize(&vs->pieces->arr[idx].bb);
+            int xs=xSize(&vs->pieces->arr[idx].bb);
+            int zs=zSize(&vs->pieces->arr[idx].bb);
             j += (xs>zs?xs:zs); flag=1;
         }
     }
     if (flag && nextInt(3)>0 && facing!=-1)
     {
-        const PV_BB *b = &vs->pieces->arr[pi].bb;
+        const BB *b = &vs->pieces->arr[pi].bb;
         int dep = vs->pieces->arr[pi].depth;
         switch (facing)
         {
         default:
-        case PV_F_NORTH: pv_gen_add_road(vs,b->minX-1,b->minY,b->minZ+0,PV_F_WEST, dep); break;
-        case PV_F_SOUTH: pv_gen_add_road(vs,b->minX-1,b->minY,b->maxZ-2,PV_F_WEST, dep); break;
-        case PV_F_WEST:  pv_gen_add_road(vs,b->minX+0,b->minY,b->minZ-1,PV_F_NORTH,dep); break;
-        case PV_F_EAST:  pv_gen_add_road(vs,b->maxX-2,b->minY,b->minZ-1,PV_F_NORTH,dep); break;
+        case FACING_NORTH: pv_gen_add_road(vs,b->minX-1,b->minY,b->minZ+0,FACING_WEST, dep); break;
+        case FACING_SOUTH: pv_gen_add_road(vs,b->minX-1,b->minY,b->maxZ-2,FACING_WEST, dep); break;
+        case FACING_WEST:  pv_gen_add_road(vs,b->minX+0,b->minY,b->minZ-1,FACING_NORTH,dep); break;
+        case FACING_EAST:  pv_gen_add_road(vs,b->maxX-2,b->minY,b->minZ-1,FACING_NORTH,dep); break;
         }
     }
     if (flag && nextInt(3)>0 && facing!=-1)
     {
-        const PV_BB *b = &vs->pieces->arr[pi].bb;
+        const BB *b = &vs->pieces->arr[pi].bb;
         int dep = vs->pieces->arr[pi].depth;
         switch (facing)
         {
         default:
-        case PV_F_NORTH: pv_gen_add_road(vs,b->maxX+1,b->minY,b->minZ+0,PV_F_EAST, dep); break;
-        case PV_F_SOUTH: pv_gen_add_road(vs,b->maxX+1,b->minY,b->maxZ-2,PV_F_EAST, dep); break;
-        case PV_F_WEST:  pv_gen_add_road(vs,b->minX+0,b->minY,b->maxZ+1,PV_F_SOUTH,dep); break;
-        case PV_F_EAST:  pv_gen_add_road(vs,b->maxX-2,b->minY,b->maxZ+1,PV_F_SOUTH,dep); break;
+        case FACING_NORTH: pv_gen_add_road(vs,b->maxX+1,b->minY,b->minZ+0,FACING_EAST, dep); break;
+        case FACING_SOUTH: pv_gen_add_road(vs,b->maxX+1,b->minY,b->maxZ-2,FACING_EAST, dep); break;
+        case FACING_WEST:  pv_gen_add_road(vs,b->minX+0,b->minY,b->maxZ+1,FACING_SOUTH,dep); break;
+        case FACING_EAST:  pv_gen_add_road(vs,b->maxX-2,b->minY,b->maxZ+1,FACING_SOUTH,dep); break;
         }
     }
 }
 
 static void pv_well_build(PV_VStart *vs)
 {
-    const PV_BB *b = &vs->pieces->arr[0].bb;
+    const BB *b = &vs->pieces->arr[0].bb;
     int dep = vs->pieces->arr[0].depth;
-    pv_gen_add_road(vs, b->minX-1, b->maxY-4, b->minZ+1, PV_F_WEST,  dep);
-    pv_gen_add_road(vs, b->maxX+1, b->maxY-4, b->minZ+1, PV_F_EAST,  dep);
-    pv_gen_add_road(vs, b->minX+1, b->maxY-4, b->minZ-1, PV_F_NORTH, dep);
-    pv_gen_add_road(vs, b->minX+1, b->maxY-4, b->maxZ+1, PV_F_SOUTH, dep);
+    pv_gen_add_road(vs, b->minX-1, b->maxY-4, b->minZ+1, FACING_WEST,  dep);
+    pv_gen_add_road(vs, b->maxX+1, b->maxY-4, b->minZ+1, FACING_EAST,  dep);
+    pv_gen_add_road(vs, b->minX+1, b->maxY-4, b->minZ-1, FACING_NORTH, dep);
+    pv_gen_add_road(vs, b->minX+1, b->maxY-4, b->maxZ+1, FACING_SOUTH, dep);
 }
 
 static int pv_facing_to_rot(int facing)
 {
     switch (facing)
     {
-    case PV_F_SOUTH: return 0;
-    case PV_F_WEST:  return 1;
-    case PV_F_NORTH: return 2;
-    case PV_F_EAST:  return 3;
+    case FACING_SOUTH: return 0;
+    case FACING_WEST:  return 1;
+    case FACING_NORTH: return 2;
+    case FACING_EAST:  return 3;
     default: return 0;
     }
 }
 
 int getPreVillagePieces(Piece *list, int n, uint64_t seed, int chunkX, int chunkZ)
 {
-    static const int hf[4] = { PV_F_SOUTH, PV_F_WEST, PV_F_NORTH, PV_F_EAST };
+    static const int hf[4] = { FACING_SOUTH, FACING_WEST, FACING_NORTH, FACING_EAST };
     int regX = chunkX < 0 ? chunkX - 40+1 : chunkX;
     int regZ = chunkZ < 0 ? chunkZ - 40+1 : chunkZ;
     setRegionSeed(seed, regX, regZ, 10387312);
@@ -5243,7 +5082,7 @@ int getPreVillagePieces(Piece *list, int n, uint64_t seed, int chunkX, int chunk
     wellPiece.vpType = VP_WELL;
     wellPiece.facing = hf[nextInt(4)];
     wellPiece.depth = 0;
-    wellPiece.bb = pvbb_make(wx, 64, wz, wx+5, 78, wz+5);
+    wellPiece.bb = bb3(wx, 64, wz, wx+5, 78, wz+5);
     wellPiece.length = 0;
 
     vs.startBB = wellPiece.bb;
@@ -5274,13 +5113,8 @@ int getPreVillagePieces(Piece *list, int n, uint64_t seed, int chunkX, int chunk
         dst->pos.x = (src->bb.minX + src->bb.maxX) / 2;
         dst->pos.y = src->bb.minY;
         dst->pos.z = (src->bb.minZ + src->bb.maxZ) / 2;
-        dst->bb0.x = src->bb.minX;
-        dst->bb0.y = src->bb.minY;
-        dst->bb0.z = src->bb.minZ;
-        dst->bb1.x = src->bb.maxX;
-        dst->bb1.y = src->bb.maxY;
-        dst->bb1.z = src->bb.maxZ;
-        dst->rot   = (uint8_t)pv_facing_to_rot(src->facing);
+        dst->bb    = src->bb;
+        dst->rot   = (uint8_t)src->facing;
         dst->depth = (int8_t)(src->depth < 127 ? src->depth : 127);
         dst->type  = (int8_t)src->vpType;
         dst->next  = NULL;
@@ -5289,30 +5123,70 @@ int getPreVillagePieces(Piece *list, int n, uint64_t seed, int chunkX, int chunk
 }
 
 //==============================================================================
-// Chorus Plant Generator (Pre-RNG consumption for Bedrock End Gateway)
+// Ravine Generator
 //==============================================================================
 
+int addTunnel(Piece *list, uint32_t tunnelSeed, 
+              double x, double y, double z, 
+              float yaw, float pitch, float thick, float scale)
+{
+    setSeed(tunnelSeed);
+    int length = 112 - nextInt(28);
+    float wf[128]; // width factors
+    for (int i = 0; i < 128; i++)
+    {
+        float f = 1.0f;
+        if (i == 0 || nextInt(3) == 0)
+        {
+            f = nextFloat() * nextFloat() + 1.0f;
+        }
+        wf[i] = f * f;
+    }
+    double a = 0.0;
+    double b = 0.0;
+    for (int i = 0; i < length; i++)
+    {
+        float pr = sinf(i * PI / length) * thick + 1.5f;
+        float hz = (nextFloat() * 0.25f + 0.75f) * pr;
+        float vt = (nextFloat() * 0.25f + 0.75f) * pr * scale;
+        BB bb = bb3(x-hz,y-vt,z-hz,x+hz,y+vt,z+hz);
+        list[i].bb = bb;
+        x += cos(pitch) * cos(yaw);
+        y += sin(pitch);
+        z += cos(pitch) * sin(yaw);
+        pitch *= 0.7f;
+        pitch += b * 0.05f;
+        yaw   += a * 0.05f;
+        b *= 0.8f;
+        a *= 0.5f;
+        b += (nextFloat() - nextFloat()) * nextFloat() * 2.0f;
+        a += (nextFloat() - nextFloat()) * nextFloat() * 4.0f;
+        nextInt(4); // idk
+    }
+    return length;
+}
+
+//==============================================================================
+// Chorus Plant Generator (Pre-RNG consumption for Bedrock End Gateway)
+//==============================================================================
+#define CHORUS_BLOCKS_CAP 2048
+
+
 typedef struct {
-    Pos3 blocks[1024];
-    int count;
+    SparseCell cells[CHORUS_BLOCKS_CAP];
+    int originX, originZ;
 } Blocks;
 
 static
 void setBlock(Blocks *m, int x, int y, int z) {
-    for (int i = 0; i < m->count; i++) {
-        if (m->blocks[i].x == x && m->blocks[i].y == y && m->blocks[i].z == z)
-            return;
-    }
-    m->blocks[m->count++] = (Pos3){x, y, z};
+    sparseSet(m->cells, CHORUS_BLOCKS_CAP, packPosKey(x, y, z, m->originX, m->originZ), 1);
 }
 
 static
 int isEmptyBlock(Blocks *blocks, int x, int y, int z) {
-    for (int i = 0; i < blocks->count; i++) {
-        if (blocks->blocks[i].x == x && blocks->blocks[i].y == y && blocks->blocks[i].z == z)
-            return 0;
-    }
-    return 1;
+    int val;
+    return !sparseFind(blocks->cells, CHORUS_BLOCKS_CAP,
+            packPosKey(x, y, z, blocks->originX, blocks->originZ), &val);
 }
 
 static
@@ -5396,6 +5270,8 @@ int getEndGatewayPos(uint64_t seed, EndNoise en, SurfaceNoise sn, int chunkX, in
     if (id != end_highlands)
         return 0;
     Blocks blocks = {0};
+    blocks.originX = chunkX * 16;
+    blocks.originZ = chunkZ * 16;
     setPopulationSeed(seed, chunkX, chunkZ);
     if (en.mc >= MC_1_18)
         skipNextN(1);

@@ -6,6 +6,48 @@
 #include <stdlib.h>
 
 
+uint64_t sparseHash(int64_t key)
+{
+    uint64_t h = (uint64_t) key;
+    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ULL;
+    h ^= h >> 33;
+    return h;
+}
+
+void sparseSet(SparseCell *tab, int cap, int64_t key, int val)
+{
+    uint64_t h = sparseHash(key) & (uint32_t)(cap - 1);
+    for (int i = 0; i < cap; i++)
+    {
+        int idx = (int)((h + (unsigned)i) & (uint32_t)(cap - 1));
+        if (!tab[idx].used || tab[idx].key == key)
+        {
+            tab[idx].used = 1;
+            tab[idx].key = key;
+            tab[idx].val = (int8_t) val;
+            return;
+        }
+    }
+}
+
+int sparseFind(const SparseCell *tab, int cap, int64_t key, int *val)
+{
+    uint64_t h = sparseHash(key) & (uint32_t)(cap - 1);
+    for (int i = 0; i < cap; i++)
+    {
+        int idx = (int)((h + (unsigned)i) & (uint32_t)(cap - 1));
+        if (!tab[idx].used)
+            return 0;
+        if (tab[idx].key == key)
+        {
+            *val = tab[idx].val;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 
 uint64_t *loadSavedSeeds(const char *fnam, uint64_t *scnt)
 {
