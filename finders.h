@@ -888,6 +888,7 @@ Pos getFeatureChunkInRegion(StructureConfig config, uint64_t seed, int regX, int
     {
     case Trail_Ruins:
     case Trial_Chambers:
+    case Abandoned_Camp:
     {
     const uint64_t K = 0x5deece66dULL;
     const uint64_t M = (1ULL << 48) - 1;
@@ -929,8 +930,13 @@ Pos getFeaturePos(StructureConfig config, uint64_t seed, int regX, int regZ)
 {
     Pos pos = getFeatureChunkInRegion(config, seed, regX, regZ);
 
-    pos.x = (int)(((uint64_t)regX*config.regionSize + pos.x) << 4)+8;
-    pos.z = (int)(((uint64_t)regZ*config.regionSize + pos.z) << 4)+8;
+    pos.x = (int)(((uint64_t)regX*config.regionSize + pos.x) << 4);
+    pos.z = (int)(((uint64_t)regZ*config.regionSize + pos.z) << 4);
+    if (config.structType != Abandoned_Camp)
+    {
+        pos.x+=8;
+        pos.z+=8;
+    }
     return pos;
 }
 
