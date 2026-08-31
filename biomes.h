@@ -35,7 +35,8 @@ enum MCVersion
     MC_26_20,
     MC_26_30,
     MC_26_40, // 26.40.27
-    MC_NEWEST = MC_26_40,
+    MC_26_50,
+    MC_NEWEST = MC_26_50,
 };
 
 enum Dimension

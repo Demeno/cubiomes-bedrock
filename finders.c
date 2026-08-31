@@ -42,7 +42,8 @@ int getStructureConfig(int structureType, int mc, StructureConfig *sconf)
     s_ancient_city          = { 20083232, 24, 16, Ancient_City,     DIM_OVERWORLD, 0},
     s_trail_ruins           = { 83469867, 34, 26, Trail_Ruins,      DIM_OVERWORLD, 0},
     s_trial_chambers        = { 94251327, 34, 22, Trial_Chambers,   DIM_OVERWORLD, 0},
-    s_abandoned_camp        = { 91231127, 34, 26, Abandoned_Camp,   DIM_OVERWORLD, 0},
+    s_abandoned_camp_264    = { 91231127, 34, 26, Abandoned_Camp,   DIM_OVERWORLD, 0},
+    s_abandoned_camp        = { 91231127, 37, 29, Abandoned_Camp,   DIM_OVERWORLD, 0},
     s_treasure              = { 16842397,  4,  2, Treasure,         DIM_OVERWORLD, 0},
     s_mineshaft             = {        0,  1,  1, Mineshaft,        DIM_OVERWORLD, 0},
     // nether structures
@@ -165,7 +166,7 @@ int getStructureConfig(int structureType, int mc, StructureConfig *sconf)
         *sconf = s_trial_chambers;
         return mc >= MC_1_21;
     case Abandoned_Camp:
-        *sconf = s_abandoned_camp;
+        *sconf = mc >= MC_26_50 ? s_abandoned_camp : s_abandoned_camp_264;
         return mc >= MC_26_40; // 26.40.27
     default:
         memset(sconf, 0, sizeof(StructureConfig));
@@ -224,11 +225,14 @@ int getStructurePos(int structureType, int mc, uint64_t seed, int regX, int regZ
     case Outpost:
     case Ancient_City:
     case Treasure:
-    case Abandoned_Camp:
         *pos = getLargeStructurePos(sconf, seed, regX, regZ);
         // bug? for some reason v1.4.2 treasures spawn at coords -2 from where they should be
         if (structureType == Treasure && mc <= MC_1_4)
             pos->x -= 2, pos->z -= 2;
+        return 1;
+    
+    case Abandoned_Camp:
+        *pos = (mc < MC_26_50 ? getLargeStructurePos : getFeaturePos)(sconf, seed, regX, regZ);
         return 1;
 
     case Stronghold:
@@ -2097,6 +2101,92 @@ static void moveBelowSeaLevel(Piece *list, int count, int seaLevel, int minWorld
 static void moveInsideHeights(Piece *list, int count, int minY, int maxY);
 static void offsetPiecesVertically(Piece *list, int count, int dy);
 
+static int hasSecretChest(int mc, int campIdx, int tentIdx, int biomeID)
+{
+    if (mc < MC_26_50)
+    {
+        return (campIdx == 46) ||                            // campsite_default_special_8
+               (campIdx == 1 && biomeID == sparse_jungle) || // campsite_sparse_jungle_2
+               (campIdx == 0 && biomeID == birch_forest ) || // campsite_birch_forest_1
+               (tentIdx == 4 && biomeID == cherry_grove );   // tent_cherry_grove_4
+    }
+
+    if (campIdx < 4)
+    {
+        switch (campIdx)
+        {
+        case 0: // campsite_biome_1
+            return biomeID == snowy_taiga;
+        case 1: // campsite_biome_2
+            switch (biomeID)
+            {
+            case flower_forest:
+            case old_growth_birch_forest:
+            case old_growth_pine_taiga:
+            case pale_garden:
+            case savanna:
+            case sparse_jungle:
+            case swamp:
+                return 1;
+            }
+            return 0;
+        case 2: // campsite_biome_3
+            switch (biomeID)
+            {
+            case bamboo_jungle:
+            case cherry_grove:
+            case dappled_forest:
+            case forest:
+            case meadow:
+            case windswept_forest:
+            case wooded_badlands:
+                return 1;
+            }
+            return 0;
+        case 3: // campsite_biome_4
+            switch (biomeID)
+            {
+            case bamboo_jungle:
+            case birch_forest:
+            case cherry_grove:
+            case dappled_forest:
+            case flower_forest:
+            case forest:
+            case meadow:
+            case old_growth_birch_forest:
+            case old_growth_pine_taiga:
+            case old_growth_spruce_taiga:
+            case pale_garden:
+            case savanna:
+            case sparse_jungle:
+            case swamp:
+            case taiga:
+            case windswept_forest:
+            case wooded_badlands:
+                return 1;
+            }
+            return 0;
+        default:
+            return 0;
+        }
+    }
+    else
+    {
+        static const int campOrder[15] = {
+            // alphabet order
+            1, 10, 11, 12, 13, 14, 15, 2, 3, 4, 5, 6, 7, 8, 9
+        };
+        static const uint16_t secretMask[3] = {
+            (1u << 11)|(1u << 12)|(1u << 13)|(1u << 14)|(1u << 15),                       // barrel
+            (1u <<  6)|(1u <<  7)|(1u <<  8)|(1u <<  9)|(1u << 10),                       // chest
+            (1u <<  1)|(1u <<  4)|(1u <<  6)|(1u <<  8)|(1u <<  9)|(1u << 10)|(1u << 13), // special
+        };
+        int cat = (campIdx - 4) / 15;
+        int pos = (campIdx - 4) % 15;
+        int num = campOrder[pos];
+        return (secretMask[cat] & (1u << num)) != 0;
+    }
+}
 
 int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
         int x, int z, int biomeID)
@@ -2501,45 +2591,43 @@ int getVariant(StructureVariant *r, int structType, int mc, uint64_t seed,
         };
 
         uint64_t rng = chunkGenerateRnd(seed, cx, cz);
-        int rotIdx  = JnextInt(&rng, 4);
+        r->rotation = JnextInt(&rng, 4);
         int tentIdx = JnextInt(&rng, 10);
 
-        sx = repTent[tentIdx][0];
-        sy = repTent[tentIdx][1];
-        sz = repTent[tentIdx][2];
-        int ex, ez;
-        switch (rotIdx)
+        r->sx = repTent[tentIdx][0];
+        r->sy = repTent[tentIdx][1];
+        r->sz = repTent[tentIdx][2];
+        switch (r->rotation)
         {
-        case 0: ex =  (sx-1); ez =  (sz-1); r->sx = sx; r->sz = sz; break;
-        case 1: ex = -(sz-1); ez =  (sx-1); r->sx = sz; r->sz = sx; break;
-        case 2: ex = -(sx-1); ez = -(sz-1); r->sx = sx; r->sz = sz; break;
-        default:ex =  (sz-1); ez = -(sx-1); r->sx = sz; r->sz = sx; break;
+            case 0: break;
+            case 1: r->x = 1-r->sz; r->z = 0;       break;
+            case 2: r->x = 1-r->sx; r->z = 1-r->sz; break;
+            case 3: r->x = 0;       r->z = 1-r->sx; break;
         }
-        r->x = ex / 2;
-        r->z = ez / 2;
-        r->sy = sy;
-        r->rotation = (uint8_t) rotIdx;
         r->start = (uint8_t) tentIdx; // tent piece index (0-9): see getCampTentName()
         r->biome = biomeID;
 
-        int arr[48];
-        for (int i = 0; i < 48; i++)
+        int totalCamps = 15+15+15; // barrel + chest + special
+        // biome campsites
+        if (mc >= MC_26_50) {
+            totalCamps += 4;
+        } else {
+            totalCamps += 3;
+        }
+        int arr[49];
+        for (int i = 0; i < totalCamps; i++)
             arr[i] = i;
         // fisher-yates shuffle
-        for (int n = 48; n > 1; n--)
+        for (int n = totalCamps; n > 1; n--)
         {
             int k = JnextInt(&rng, n);
             int tmp = arr[k];
             arr[k] = arr[n-1];
             arr[n-1] = tmp;
         }
-        int campIdx = arr[0]; // 0-47: see getCampsiteName()
+        int campIdx = arr[0]; // see getCampsiteName()
         r->size = (uint8_t) campIdx;
-        // secret chest
-        r->secret = (campIdx == 46) ||                            // campsite_default_special_8
-                    (campIdx == 1 && biomeID == sparse_jungle) || // campsite_sparse_jungle_2
-                    (campIdx == 0 && biomeID == birch_forest ) || // campsite_birch_forest_1
-                    (tentIdx == 4 && biomeID == cherry_grove );   // tent_cherry_grove_4
+        r->secret = hasSecretChest(mc, campIdx, tentIdx, biomeID);
         return 1;
     }
 

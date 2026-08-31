@@ -159,12 +159,14 @@ const char* mc2str(int mc)
     case MC_26_20:   return "26.20"; break;
     case MC_26_30:   return "26.30"; break;
     case MC_26_40:   return "26.40"; break;
+    case MC_26_50:   return "26.50"; break;
     default:         return "?";
     }
 }
 
 int str2mc(const char *s)
 {
+    if (!strcmp(s, "26.50"))    return MC_26_50;
     if (!strcmp(s, "26.40"))    return MC_26_40;
     if (!strcmp(s, "26.30"))    return MC_26_30;
     if (!strcmp(s, "26.20"))    return MC_26_20;
